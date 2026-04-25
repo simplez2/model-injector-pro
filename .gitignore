@@ -1,9 +1,28 @@
 .DS_Store
 Thumbs.db
 *.log
+*.tmp
+*.bak
 node_modules/
 dist/
 build/
 coverage/
+.cache/
 .idea/
 .vscode/
+.env
+.env.*
+!.env.example
+
+# Local source archive leftovers
+.gpt-temp/
+temp_patch.txt
+temp_patch_nobom.txt
+extension/fix_ui.patch
+extension/content.recover.test.js
+extension/icons/_test.png
+
+# Browser and package artifacts
+*.crx
+*.pem
+*.zip
