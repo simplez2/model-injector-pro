@@ -13,6 +13,7 @@ ChatGPT Model Injector Pro 是一个 Manifest V3 浏览器扩展项目，用于�
 - 已补齐 `extension/libs/o200k_base.js` 兼容 tokenizer 层，用于轻量 token 估算。
 - 已补齐 `package.json`、校验脚本、打包脚本和 GitHub Actions workflow。
 - 已补齐 README、使用指南、架构说明和迭代优化文档。
+- 当前仓库内容以已提交文件为准，校验流程会基于最新提交重新验证扩展结构。
 
 ## 功能
 
