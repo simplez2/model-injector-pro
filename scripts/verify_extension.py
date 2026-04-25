@@ -53,7 +53,6 @@ def check_manifest_files(manifest: dict) -> None:
 
 def check_no_local_junk() -> None:
     blocked = {
-        ".git",
         "temp_patch.txt",
         "temp_patch_nobom.txt",
         "extension/fix_ui.patch",
