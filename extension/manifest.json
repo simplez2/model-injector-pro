@@ -1,16 +1,19 @@
 {
   "manifest_version": 3,
   "name": "ChatGPT Model Injector Pro",
-  "version": "1.0.0",
-  "description": "Adaptive model switching, live token context tracking, and local ChatGPT request parameter controls.",
+  "version": "1.0",
+  "description": "Adaptive model switching, live token context tracking, and injected API model support for ChatGPT.",
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
   "permissions": ["storage"],
   "host_permissions": [
     "https://chatgpt.com/*",
     "https://chat.openai.com/*"
   ],
-  "action": {
-    "default_title": "ChatGPT Model Injector Pro"
-  },
   "content_scripts": [
     {
       "matches": [

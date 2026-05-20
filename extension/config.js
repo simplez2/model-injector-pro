@@ -1,8 +1,8 @@
 window.MI_CONFIG = {
     sponsor: {
-        enabled: false,
+        enabled: true,
         label: '',
-        href: 'https://github.com/simplez2/chatgpt-model-injector-pro',
+        href: 'https://github.com/your-repo/sponsor',
         title: '',
         useI18nLabel: true,
         newTab: true

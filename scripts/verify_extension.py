@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -60,7 +61,13 @@ def check_no_local_junk() -> None:
         "extension/icons/_test.png",
     }
     for relative in blocked:
-        if (ROOT / relative).exists():
+        result = subprocess.run(
+            ["git", "-C", str(ROOT), "ls-files", "--", relative],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if result.stdout.strip():
             fail(f"local-only artifact should not be committed: {relative}")
     ok("local-only artifacts are absent")
 
@@ -68,8 +75,8 @@ def check_no_local_junk() -> None:
 def check_source_smoke() -> None:
     content = (EXTENSION_DIR / "content.js").read_text(encoding="utf-8")
     required_patterns = [
-        r"installNetworkHooks",
-        r"patchPayload",
+        r"installFetchHook",
+        r"rewriteConversationPayload",
         r"MODELS_ENDPOINT",
         r"GPTTokenizer_o200k_base",
     ]

@@ -5,8 +5,8 @@
   "description": "Manifest V3 browser extension for local ChatGPT model parameter controls and context-token estimation.",
   "type": "commonjs",
   "scripts": {
-    "verify": "node --check extension/content.js && node --check extension/config.js && node --check extension/libs/o200k_base.js && python3 scripts/verify_extension.py",
-    "package": "python3 scripts/package_extension.py"
+    "verify": "node --check extension/content.js && node --check extension/config.js && node --check extension/libs/o200k_base.js && python scripts/verify_extension.py",
+    "package": "python scripts/package_extension.py"
   },
   "keywords": [
     "browser-extension",
