@@ -1,0 +1,34 @@
+<svg width="256" height="256" viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">Model Injector Orbital Lens icon</title>
+  <desc id="desc">An original open orbital ring surrounding a vertical optical lens and mint light point on a restrained dark tile.</desc>
+  <defs>
+    <linearGradient id="orbitGradient" x1="79" y1="61" x2="185" y2="197" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F7FBFC"/>
+      <stop offset="0.55" stop-color="#D9ECEE"/>
+      <stop offset="1" stop-color="#88D9D6"/>
+    </linearGradient>
+    <linearGradient id="lensGradient" x1="108" y1="90" x2="149" y2="167" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#CBE5E7"/>
+    </linearGradient>
+    <radialGradient id="light" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(124 123) rotate(48) scale(22)">
+      <stop stop-color="#F2FFFD"/>
+      <stop offset="0.45" stop-color="#9EEDE1"/>
+      <stop offset="1" stop-color="#4CBDB4"/>
+    </radialGradient>
+  </defs>
+  <rect x="16" y="16" width="224" height="224" rx="55" fill="#0D1927"/>
+  <rect x="16.75" y="16.75" width="222.5" height="222.5" rx="54.25" stroke="white" stroke-opacity="0.1" stroke-width="1.5"/>
+  <g id="orbit">
+    <path d="M191.1 169.8A74 74 0 1 1 180.3 75.7" stroke="#030A11" stroke-opacity="0.34" stroke-width="22" stroke-linecap="round" transform="translate(0 4)"/>
+    <path d="M191.1 169.8A74 74 0 1 1 180.3 75.7" stroke="url(#orbitGradient)" stroke-width="18" stroke-linecap="round"/>
+    <circle cx="180.3" cy="75.7" r="5.5" fill="#B9F6EB"/>
+  </g>
+  <g id="core">
+    <path d="M128 89C154 105.4 154 150.6 128 167C102 150.6 102 105.4 128 89Z" stroke="#02080E" stroke-opacity="0.3" stroke-width="17" stroke-linejoin="round" transform="translate(0 3)"/>
+    <path d="M128 89C154 105.4 154 150.6 128 167C102 150.6 102 105.4 128 89Z" stroke="url(#lensGradient)" stroke-width="13" stroke-linejoin="round"/>
+    <circle cx="128" cy="128" r="13" fill="#07131E" stroke="white" stroke-opacity="0.16" stroke-width="2"/>
+    <circle cx="128" cy="128" r="8.5" fill="url(#light)"/>
+    <circle cx="124.7" cy="124.6" r="2.2" fill="white" fill-opacity="0.82"/>
+  </g>
+</svg>

@@ -1,0 +1,57 @@
+.DS_Store
+Thumbs.db
+*.log
+*.tmp
+*.bak
+*.bak-*
+*.backup
+*.orig
+*~
+node_modules/
+__pycache__/
+*.py[cod]
+dist/
+build/
+coverage/
+.cache/
+.playwright-cli/
+.idea/
+.vscode/
+.env
+.env.*
+!.env.example
+
+# Local source archive leftovers
+.gpt-temp/
+captures/
+temp_patch.txt
+temp_patch_nobom.txt
+extension/fix_ui.patch
+extension/content.recover.test.js
+extension/icons/_test.png
+extension/output/
+extension/**/output/
+extension/**/*.zip
+extension/docs/
+
+# Private planning and local publication notes
+docs/GITHUB_SETUP.md
+docs/ITERATION.md
+docs/iteration-plan.md
+docs/usage-guide.md
+docs/ui-samples/
+
+# Local visual QA and browser captures
+captures/
+capture/
+screenshots/
+screenshot/
+**/capture-*.png
+**/screenshot-*.png
+**/capture-*.jpg
+**/screenshot-*.jpg
+
+# Browser and package artifacts
+*.crx
+*.pem
+*.zip
