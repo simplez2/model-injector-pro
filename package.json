@@ -1,6 +1,6 @@
 {
   "name": "model-injector-pro",
-  "version": "1.3.0",
+  "version": "1.3.2",
   "private": true,
   "description": "Independent Manifest V3 controls and diagnostics for supported ChatGPT web sessions.",
   "type": "commonjs",

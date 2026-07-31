@@ -4,7 +4,7 @@
     'use strict';
 
     const PREFIX = 'cgpt_v12_';
-    const SCRIPT_BUILD = '2026-07-30-public-release-optimized';
+    const SCRIPT_BUILD = '2026-07-31-anchor-morph-frost-v8';
     const PACKET_LOG_LIMIT = 48;
     const MODELS_ENDPOINT = '/backend-api/models';
     const CES_STATS_ENDPOINT = '/ces/statsc/flush';
@@ -21,6 +21,9 @@
     const PANEL_MAIN_HEIGHT = 680;
     const PANEL_SETTINGS_HEIGHT = 476;
     const PANEL_MIN_SIDE_HEIGHT = 280;
+    const PANEL_MOTION_DURATION = 520;
+    const PANEL_MOTION_CLOSE_RATE = 1.46;
+    const PANEL_MOTION_PRIME_LEASE = 300;
     const BUTTON_RING = 194.78;
     const COLLATOR = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
     const COLORS = ['#007aff', '#2563eb', '#0ea5e9', '#14b8a6', '#10b981', '#f59e0b', '#f97316', '#ef4444', '#ec4899', '#8b5cf6'];
@@ -213,6 +216,7 @@
         pos: readJson('pos', null),
         cnt: 0
     };
+    const liveApiModelIds = new Set();
     if (S.model === 'auto') S.model = '';
     if (!EFFORTS.includes(S.effort)) S.effort = 'standard';
     if (isHiddenModelId(S.model)) S.model = '';
@@ -227,9 +231,29 @@
     let observer = null;
     let contextTimer = 0;
     let contextIdleJob = 0;
+    let tokenRefreshDeferred = false;
     let suppressClick = false;
     let lastFocusedElement = null;
     let panelFocusFrame = 0;
+    let panelFocusTimer = 0;
+    let panelMotionAnimation = null;
+    let panelMotionAnimationKey = '';
+    let panelMotionOpening = null;
+    let panelMotionGeneration = 0;
+    let panelMotionLayoutKey = '';
+    let panelMotionPrimeFrame = 0;
+    let panelMotionPrimeTimer = 0;
+    let panelMotionGeometry = { originX: 340, originY: 652, shiftX: 0, shiftY: 44, width: 368, height: 680 };
+    let panelFirstPaintIdleJob = 0;
+    let panelFirstPaintIdleUsesTimeout = false;
+    let panelFirstPaintFrame = 0;
+    let panelFirstPaintGeneration = 0;
+    let panelFirstPaintState = 'cold';
+    let buttonPressTimer = 0;
+    let buttonMotionTimer = 0;
+    let liveCatalogSyncAttempted = false;
+    let panelToggleGeneration = 0;
+    let iconMotionCycle = 0;
     let hookInstalled = false;
     let wrappedFetch = null;
     let wrappedSendBeacon = null;
@@ -238,6 +262,7 @@
     let fetchHookKeepalive = 0;
     let calcFeedbackTimer = 0;
     let modelConfirmTimer = 0;
+    let reducedMotionQuery = null;
     let lastStats = { msgs: 0, plain: 0, chat: null, used: 0, limit: 196000, pct: 0 };
     let modelSyncStatus = 'idle';
     let injectionDiagnostic = {
@@ -312,6 +337,7 @@
             search_clear: '清除搜索',
             no_menu_results: '没有匹配结果',
             custom_group: '自定义',
+            delete_custom_model: '删除自定义模型',
             title_enable: '启用注入',
             subtitle_enable: '覆盖请求',
             title_effort: '思考深度',
@@ -410,6 +436,7 @@
             search_clear: 'Clear search',
             no_menu_results: 'No matching results',
             custom_group: 'Custom',
+            delete_custom_model: 'Delete custom model',
             title_enable: 'Enable override',
             subtitle_enable: 'Override request',
             title_effort: 'Thinking effort',
@@ -508,6 +535,7 @@
             search_clear: '検索をクリア',
             no_menu_results: '一致する結果がありません',
             custom_group: 'カスタム',
+            delete_custom_model: 'カスタムモデルを削除',
             title_enable: '上書きを有効化',
             subtitle_enable: 'リクエストを上書き',
             title_effort: '思考強度',
@@ -606,6 +634,7 @@
             search_clear: 'Очистить поиск',
             no_menu_results: 'Нет совпадений',
             custom_group: 'Пользовательские',
+            delete_custom_model: 'Удалить пользовательскую модель',
             title_enable: 'Включить подмену',
             subtitle_enable: 'Переопределять запрос',
             title_effort: 'Глубина мышления',
@@ -830,6 +859,7 @@
     function fmtTok(value) { return Number(value) >= 1000 ? `${(Number(value) / 1000).toFixed(1).replace(/\.0$/, '')}k` : String(Math.round(Number(value) || 0)); }
     function sortModelEntries(a, b) { return COLLATOR.compare(a?.name || a?.id || '', b?.name || b?.id || ''); }
     function getApiEntry(id) { return S.api.find(item => item.id === id) || null; }
+    function isLiveCatalogModel(id) { return liveApiModelIds.has(id); }
     function isWorkspaceAgentSelection(id) { return typeof id === 'string' && id.startsWith(WORKSPACE_AGENT_PREFIX); }
     function makeWorkspaceAgentSelection(id) { return id ? `${WORKSPACE_AGENT_PREFIX}${id}` : ''; }
     function getWorkspaceAgentId(selection = S.model) { return isWorkspaceAgentSelection(selection) ? selection.slice(WORKSPACE_AGENT_PREFIX.length) : ''; }
@@ -988,6 +1018,10 @@
         cancelContextIdleJob();
         const run = () => {
             contextIdleJob = 0;
+            if (isPanelMotionActive()) {
+                tokenRefreshDeferred = true;
+                return;
+            }
             if (!document.hidden) recalcTokens();
         };
         if (typeof window.requestIdleCallback === 'function') {
@@ -1000,8 +1034,16 @@
         if (document.hidden) return;
         if (contextTimer) window.clearTimeout(contextTimer);
         cancelContextIdleJob();
+        if (isPanelMotionActive()) {
+            tokenRefreshDeferred = true;
+            return;
+        }
         if (immediate) runScheduledTokenUpdate();
         else contextTimer = window.setTimeout(runScheduledTokenUpdate, 650);
+    }
+
+    function isPanelMotionActive() {
+        return Boolean(q('mi-p')?.classList.contains('is-motion-active'));
     }
     function elementMatchesOrContains(node, selector) {
         if (!node || node.nodeType !== Node.ELEMENT_NODE) return false;
@@ -1016,11 +1058,10 @@
         }
         return false;
     }
-    function mutationTouchesWorkspaceAgent(record) {
-        for (const nodes of [record.addedNodes, record.removedNodes]) {
-            for (const node of nodes) {
-                if (elementMatchesOrContains(node, AGENT_LINK_SELECTOR)) return true;
-            }
+    function mutationTouchesWorkspaceAgent(record, target) {
+        if (target?.closest?.(AGENT_LINK_SELECTOR)) return true;
+        for (const node of record.addedNodes || []) {
+            if (elementMatchesOrContains(node, AGENT_LINK_SELECTOR)) return true;
         }
         return false;
     }
@@ -1038,7 +1079,7 @@
                 }
                 if (record.addedNodes?.length || record.removedNodes?.length) {
                     if (!relevant && mutationTouchesConversation(record, target)) relevant = true;
-                    if (!shouldScanAgents && mutationTouchesWorkspaceAgent(record)) shouldScanAgents = true;
+                    if (!shouldScanAgents && mutationTouchesWorkspaceAgent(record, target)) shouldScanAgents = true;
                 }
                 if (relevant && shouldScanAgents) break;
             }
@@ -1069,8 +1110,18 @@
     }
 
     let agentScanTimer = 0;
+    let agentScanDeferred = false;
     let modelMenuQuery = '';
     let modelMenuAgentOnly = false;
+    let modelMenuRenderFrame = 0;
+
+    function scheduleDropdownFilterRender() {
+        if (modelMenuRenderFrame) return;
+        modelMenuRenderFrame = requestAnimationFrame(() => {
+            modelMenuRenderFrame = 0;
+            renderDropdown();
+        });
+    }
 
     function mergeSourceValue(previous, next) {
         const parts = new Set(String(previous || '').split('+').filter(Boolean));
@@ -1078,7 +1129,16 @@
         return [...parts].join('+') || next || previous || 'page';
     }
 
-    function registerWorkspaceAgent(agent, source = 'page') {
+    function commitWorkspaceAgentCatalog() {
+        saveJson('agents', S.agents);
+        saveValue('laf', S.lastAgentFetch);
+        renderDropdown();
+        renderRecent();
+        updateInfo();
+        updateDiagnostics();
+    }
+
+    function registerWorkspaceAgent(agent, source = 'page', options = {}) {
         const id = typeof agent?.id === 'string' ? agent.id.trim() : '';
         if (!/^agt_[\w:-]+$/i.test(id)) return false;
 
@@ -1107,12 +1167,7 @@
         if (!changed) return false;
         S.agents = sanitizeWorkspaceAgentList([next, ...S.agents.filter(item => item.id !== id)]);
         S.lastAgentFetch = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-        saveJson('agents', S.agents);
-        saveValue('laf', S.lastAgentFetch);
-        renderDropdown();
-        renderRecent();
-        updateInfo();
-        updateDiagnostics();
+        if (!options.deferCommit) commitWorkspaceAgentCatalog();
         log('Workspace agent captured', next);
         return true;
     }
@@ -1128,24 +1183,19 @@
         if (!isSupportedHost() || !document.body) return 0;
         let count = 0;
         const seen = new Set();
-        const selectors = [
-            'a[href*="/agents/a/"]',
-            '[href*="/agents/a/"]',
-            '[data-href*="/agents/a/"]'
-        ];
-        document.querySelectorAll(selectors.join(',')).forEach(node => {
+        document.querySelectorAll(AGENT_LINK_SELECTOR).forEach(node => {
             const href = node.getAttribute?.('href') || node.getAttribute?.('data-href') || '';
             const match = href.match(AGENT_PAGE_PATH_RE);
             if (!match || seen.has(match[1])) return;
             seen.add(match[1]);
             const label = getTextLabel(node) || getTextLabel(node.closest?.('li, [role="menuitem"], [role="treeitem"], [data-testid], div')) || match[1];
-            if (registerWorkspaceAgent({ id: match[1], name: label }, 'page')) count += 1;
+            if (registerWorkspaceAgent({ id: match[1], name: label }, 'page', { deferCommit: true })) count += 1;
         });
 
         const current = location.pathname.match(AGENT_PAGE_PATH_RE);
         if (current && !seen.has(current[1])) {
             const title = (document.title || '').replace(/\s*\|\s*ChatGPT.*$/i, '').trim();
-            if (registerWorkspaceAgent({ id: current[1], name: title || current[1] }, 'page')) count += 1;
+            if (registerWorkspaceAgent({ id: current[1], name: title || current[1] }, 'page', { deferCommit: true })) count += 1;
         }
         if (current) {
             const conversations = [...new Set([...document.querySelectorAll('a[href*="/c/"], [href*="/c/"], [data-href*="/c/"]')]
@@ -1156,19 +1206,39 @@
                 name: getWorkspaceAgent(current[1])?.name || current[1],
                 conversations,
                 lastConversationId: conversations[0]
-            }, 'page')) count += 1;
+            }, 'page', { deferCommit: true })) count += 1;
         }
 
+        if (count) commitWorkspaceAgentCatalog();
         return count;
     }
 
     function scheduleWorkspaceAgentScan(delay = 800) {
         if (document.hidden) return;
         if (agentScanTimer) window.clearTimeout(agentScanTimer);
+        if (isPanelMotionActive()) {
+            agentScanDeferred = true;
+            return;
+        }
         agentScanTimer = window.setTimeout(() => {
             agentScanTimer = 0;
+            if (isPanelMotionActive()) {
+                agentScanDeferred = true;
+                return;
+            }
             scanWorkspaceAgentsFromPage();
         }, delay);
+    }
+
+    function resumeDeferredUiWork() {
+        if (tokenRefreshDeferred) {
+            tokenRefreshDeferred = false;
+            scheduleTokenUpdate();
+        }
+        if (agentScanDeferred) {
+            agentScanDeferred = false;
+            scheduleWorkspaceAgentScan(250);
+        }
     }
 
     function getAgentIdFromValue(value) {
@@ -1337,8 +1407,9 @@
         });
         let count = 0;
         unique.forEach(agent => {
-            if (registerWorkspaceAgent(agent, source)) count += 1;
+            if (registerWorkspaceAgent(agent, source, { deferCommit: true })) count += 1;
         });
+        if (count) commitWorkspaceAgentCatalog();
         return count;
     }
 
@@ -1782,6 +1853,8 @@
         if (!normalized.length) return false;
 
         S.api = normalized;
+        liveApiModelIds.clear();
+        normalized.forEach(model => liveApiModelIds.add(model.id));
         S.lastFetch = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
         saveJson('api', S.api);
         saveValue('lf', S.lastFetch);
@@ -1791,7 +1864,7 @@
         renderRecent();
         updateInfo();
         updateModelLabel();
-        recalcTokens();
+        scheduleTokenUpdate();
         return true;
     }
 
@@ -3067,7 +3140,8 @@
     }
 
     function updateBackdrop() {
-        const open = q('mi-p')?.classList.contains('show');
+        const panel = q('mi-p');
+        const open = Boolean(panel?.classList.contains('show') && !panel.classList.contains('is-closing'));
         const backdrop = q('mi-backdrop');
         if (!backdrop) return;
         backdrop.classList.toggle('show', Boolean(open));
@@ -3138,12 +3212,16 @@
 
     function openDropdown(focusSearch = false) {
         scanWorkspaceAgentsFromPage();
-        renderDropdown();
+        renderDropdown({ force: true });
         q('mi-sel-wrap')?.classList.add('open');
         positionDropdown();
         q('mi-drop')?.classList.add('show');
         q('mi-drop')?.setAttribute('aria-hidden', 'false');
         q('mi-sel-btn')?.setAttribute('aria-expanded', 'true');
+        if (isSupportedHost() && S.api.length && !liveApiModelIds.size && !liveCatalogSyncAttempted) {
+            liveCatalogSyncAttempted = true;
+            fetchModels();
+        }
         if (focusSearch) requestAnimationFrame(focusMenuSearch);
     }
 
@@ -3228,7 +3306,11 @@
         const x = parseInt(host.style.left || '', 10);
         const y = parseInt(host.style.top || '', 10);
         if (Number.isFinite(x) && Number.isFinite(y)) {
-            setHostPosition(x, y, persist);
+            const maxX = window.innerWidth - BUTTON_SIZE - VIEW_MARGIN;
+            const maxY = window.innerHeight - BUTTON_SIZE - VIEW_MARGIN;
+            const nextX = clamp(Math.round(x), VIEW_MARGIN, maxX);
+            const nextY = clamp(Math.round(y), VIEW_MARGIN, maxY);
+            if (persist || nextX !== x || nextY !== y) setHostPosition(nextX, nextY, persist);
             return;
         }
 
@@ -3269,10 +3351,31 @@
             : placeAbove
             ? anchorRect.top - panelHeight - gap
             : anchorRect.bottom + gap;
+        const anchorCenterX = anchorRect.left + (anchorRect.width / 2);
+        const anchorCenterY = anchorRect.top + (anchorRect.height / 2);
+        const edgeInsetX = Math.min(28, panelWidth / 2);
+        const edgeInsetY = Math.min(28, panelHeight / 2);
+        const originX = clamp(
+            anchorCenterX - targetLeft,
+            edgeInsetX,
+            Math.max(edgeInsetX, panelWidth - edgeInsetX)
+        );
+        const originY = clamp(
+            anchorCenterY - targetTop,
+            edgeInsetY,
+            Math.max(edgeInsetY, panelHeight - edgeInsetY)
+        );
+        const shiftX = clamp(anchorCenterX - (targetLeft + originX), -56, 56);
+        const shiftY = clamp(anchorCenterY - (targetTop + originY), -72, 72);
 
-        const originX = clamp(anchorRect.left + (anchorRect.width / 2) - targetLeft, 24, panelWidth - 24);
         panel.style.left = `${Math.round(targetLeft - hostRect.left)}px`;
         panel.style.right = 'auto';
+        panel.style.transformOrigin = `${Math.round(originX)}px ${Math.round(originY)}px`;
+        panel.style.setProperty('--mi-panel-anchor-x', `${Math.round(originX)}px`);
+        panel.style.setProperty('--mi-panel-anchor-y', `${Math.round(originY)}px`);
+        panel.style.setProperty('--mi-panel-content-shift-y', detached
+            ? (shiftY < 0 ? '-8px' : '8px')
+            : placeAbove ? '8px' : '-8px');
         panel.dataset.placement = detached ? 'detached' : placeAbove ? 'above' : 'below';
         if (detached) {
             panel.style.top = `${Math.round(VIEW_MARGIN - hostRect.top)}px`;
@@ -3285,12 +3388,7 @@
             panel.style.top = `${Math.round(targetTop - hostRect.top)}px`;
             panel.style.bottom = 'auto';
         }
-        const originY = detached
-            ? clamp(anchorRect.top + (anchorRect.height / 2) - VIEW_MARGIN, 24, panelHeight - 24)
-            : placeAbove
-            ? `calc(100% + ${gap}px)`
-            : `-${gap}px`;
-        panel.style.transformOrigin = `${Math.round(originX)}px ${typeof originY === 'number' ? `${Math.round(originY)}px` : originY}`;
+        return { originX, originY, shiftX, shiftY, width: panelWidth, height: panelHeight };
     }
 
     function setPanelView(view = 'main', focus = true) {
@@ -3305,6 +3403,15 @@
         settingsView?.setAttribute('aria-hidden', nextView === 'settings' ? 'false' : 'true');
         mainView?.toggleAttribute('inert', nextView !== 'main');
         settingsView?.toggleAttribute('inert', nextView !== 'settings');
+        if (panel.classList.contains('show') && !panel.classList.contains('is-motion-active')) {
+            invalidatePanelMotionLayout(panel);
+            requestAnimationFrame(() => {
+                if (panel.classList.contains('show') && !panel.classList.contains('is-closing')) {
+                    const geometry = preparePanelMotionLayout(panel);
+                    preparePanelMotionAnimation(panel, geometry, PANEL_MOTION_DURATION);
+                }
+            });
+        }
         if (focus && panel.classList.contains('show')) {
             schedulePanelFocus(nextView === 'settings' ? q('mi-set-close') : q('mi-sel-btn'));
         }
@@ -3316,6 +3423,492 @@
             panelFocusFrame = 0;
             if (target?.isConnected) target.focus({ preventScroll: true });
         });
+    }
+
+    function prefersReducedMotion() {
+        if (!reducedMotionQuery && typeof window.matchMedia === 'function') {
+            reducedMotionQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
+        }
+        return Boolean(reducedMotionQuery?.matches);
+    }
+
+    function getPanelMotionLayoutKey(panel = q('mi-p')) {
+        if (!panel || !host) return '';
+        return [
+            window.innerWidth,
+            window.innerHeight,
+            host.style.left,
+            host.style.top,
+            panel.dataset.view || 'main'
+        ].join(':');
+    }
+
+    function releasePanelMotionPrime(panel = q('mi-p')) {
+        if (panelMotionPrimeTimer) {
+            window.clearTimeout(panelMotionPrimeTimer);
+            panelMotionPrimeTimer = 0;
+        }
+        panel?.classList.remove('is-motion-primed');
+        q('mi-backdrop')?.classList.remove('is-motion-primed');
+    }
+
+    function cancelPanelFirstPaintIdleJob() {
+        if (!panelFirstPaintIdleJob) return;
+        if (!panelFirstPaintIdleUsesTimeout && typeof window.cancelIdleCallback === 'function') {
+            window.cancelIdleCallback(panelFirstPaintIdleJob);
+        } else {
+            window.clearTimeout(panelFirstPaintIdleJob);
+        }
+        panelFirstPaintIdleJob = 0;
+        panelFirstPaintIdleUsesTimeout = false;
+    }
+
+    function cancelPanelFirstPaintFrame() {
+        if (!panelFirstPaintFrame) return;
+        cancelAnimationFrame(panelFirstPaintFrame);
+        panelFirstPaintFrame = 0;
+    }
+
+    function queuePanelFirstPaintFrames(callback) {
+        cancelPanelFirstPaintFrame();
+        panelFirstPaintFrame = requestAnimationFrame(() => {
+            panelFirstPaintFrame = requestAnimationFrame(() => {
+                panelFirstPaintFrame = 0;
+                callback();
+            });
+        });
+    }
+
+    function resetPanelFirstPaintPreparation(panel = q('mi-p')) {
+        if (panelFirstPaintState === 'consumed') return;
+        panelFirstPaintGeneration += 1;
+        cancelPanelFirstPaintIdleJob();
+        cancelPanelFirstPaintFrame();
+        panel?.classList.remove('is-first-paint-warmup', 'is-first-paint-ready');
+        q('mi-backdrop')?.classList.remove('is-first-paint-warmup', 'is-first-paint-ready');
+        if (!panel?.classList.contains('is-motion-active')) panel?.classList.remove('is-motion-primed');
+        panelFirstPaintState = 'cold';
+    }
+
+    function beginPanelFirstPaintPreparation(panel = q('mi-p')) {
+        if (
+            !panel
+            || panelFirstPaintState !== 'cold'
+            || panel.classList.contains('show')
+            || document.hidden
+            || prefersReducedMotion()
+        ) return;
+
+        const geometry = preparePanelMotionLayout(panel);
+        const animation = preparePanelMotionAnimation(panel, geometry, PANEL_MOTION_DURATION);
+        if (!animation) {
+            panelFirstPaintState = 'consumed';
+            return;
+        }
+
+        const generation = ++panelFirstPaintGeneration;
+        const backdrop = q('mi-backdrop');
+        panelFirstPaintState = 'warming';
+        animation.pause();
+        animation.currentTime = PANEL_MOTION_DURATION;
+        panel.classList.remove('is-first-paint-ready');
+        panel.classList.add('is-first-paint-warmup');
+        backdrop?.classList.remove('is-first-paint-ready');
+        backdrop?.classList.add('is-first-paint-warmup');
+        panel.getBoundingClientRect();
+
+        queuePanelFirstPaintFrames(() => {
+            if (generation !== panelFirstPaintGeneration || panelFirstPaintState !== 'warming') return;
+            panel.classList.add('is-motion-primed');
+            queuePanelFirstPaintFrames(() => {
+                if (generation !== panelFirstPaintGeneration || panelFirstPaintState !== 'warming') return;
+                animation.pause();
+                animation.currentTime = 0;
+                panel.classList.remove('is-first-paint-warmup');
+                panel.classList.add('is-first-paint-ready');
+                backdrop?.classList.remove('is-first-paint-warmup');
+                backdrop?.classList.add('is-first-paint-ready');
+                panelFirstPaintState = 'ready';
+            });
+        });
+    }
+
+    function schedulePanelFirstPaintPreparation(panel = q('mi-p')) {
+        if (
+            !panel
+            || panelFirstPaintState !== 'cold'
+            || panel.classList.contains('show')
+            || document.hidden
+            || prefersReducedMotion()
+        ) return;
+        cancelPanelFirstPaintIdleJob();
+        const run = () => {
+            panelFirstPaintIdleJob = 0;
+            panelFirstPaintIdleUsesTimeout = false;
+            beginPanelFirstPaintPreparation(panel);
+        };
+        if (typeof window.requestIdleCallback === 'function') {
+            panelFirstPaintIdleUsesTimeout = false;
+            panelFirstPaintIdleJob = window.requestIdleCallback(run, { timeout: 900 });
+        } else {
+            panelFirstPaintIdleUsesTimeout = true;
+            panelFirstPaintIdleJob = window.setTimeout(run, 180);
+        }
+    }
+
+    function armPanelFirstPaintForInteraction(panel = q('mi-p')) {
+        if (!panel || panelFirstPaintState === 'consumed') return false;
+        cancelPanelFirstPaintIdleJob();
+        cancelPanelFirstPaintFrame();
+        panelFirstPaintGeneration += 1;
+        const hadPreparedLayer = panelFirstPaintState === 'ready' || panelFirstPaintState === 'warming';
+        if (panelFirstPaintState === 'warming') {
+            panelMotionAnimation?.pause();
+            if (panelMotionAnimation) panelMotionAnimation.currentTime = 0;
+            panel.classList.remove('is-first-paint-warmup');
+            panel.classList.add('is-first-paint-ready', 'is-motion-primed');
+            q('mi-backdrop')?.classList.remove('is-first-paint-warmup');
+            q('mi-backdrop')?.classList.add('is-first-paint-ready', 'is-motion-primed');
+        }
+        if (hadPreparedLayer) panelFirstPaintState = 'ready';
+        return hadPreparedLayer;
+    }
+
+    function consumePanelFirstPaintPreparation(panel = q('mi-p')) {
+        if (!panel || panelFirstPaintState === 'consumed') return;
+        panelFirstPaintGeneration += 1;
+        cancelPanelFirstPaintIdleJob();
+        cancelPanelFirstPaintFrame();
+        panel.classList.remove('is-first-paint-warmup', 'is-first-paint-ready');
+        q('mi-backdrop')?.classList.remove('is-first-paint-warmup', 'is-first-paint-ready');
+        panelFirstPaintState = 'consumed';
+    }
+
+    function invalidatePanelMotionLayout(panel = q('mi-p')) {
+        resetPanelFirstPaintPreparation(panel);
+        panelMotionLayoutKey = '';
+        if (panelMotionPrimeFrame) {
+            cancelAnimationFrame(panelMotionPrimeFrame);
+            panelMotionPrimeFrame = 0;
+        }
+        releasePanelMotionPrime(panel);
+    }
+
+    function preparePanelMotionLayout(panel = q('mi-p')) {
+        if (!panel || !host) return panelMotionGeometry;
+        const currentKey = getPanelMotionLayoutKey(panel);
+        if (currentKey && currentKey === panelMotionLayoutKey) return panelMotionGeometry;
+        const geometry = positionFloatingPanel(panel);
+        if (geometry) panelMotionGeometry = geometry;
+        panelMotionLayoutKey = getPanelMotionLayoutKey(panel);
+        return panelMotionGeometry;
+    }
+
+    function primePanelMotion(panel = q('mi-p')) {
+        const geometry = preparePanelMotionLayout(panel);
+        preparePanelMotionAnimation(panel, geometry, panel?.classList.contains('show') ? PANEL_MOTION_DURATION : 0);
+        if (!prefersReducedMotion()) {
+            panel?.classList.add('is-motion-primed');
+            q('mi-backdrop')?.classList.add('is-motion-primed');
+            if (panelMotionPrimeTimer) window.clearTimeout(panelMotionPrimeTimer);
+            panelMotionPrimeTimer = window.setTimeout(() => {
+                panelMotionPrimeTimer = 0;
+                if (!panel?.classList.contains('show') && !panel?.classList.contains('is-motion-active')) {
+                    panel?.classList.remove('is-motion-primed');
+                    q('mi-backdrop')?.classList.remove('is-motion-primed');
+                }
+            }, PANEL_MOTION_PRIME_LEASE);
+        }
+        return geometry;
+    }
+
+    function schedulePanelMotionPreparation(panel = q('mi-p')) {
+        if (!panel || panel.classList.contains('show') || panelMotionPrimeFrame) return;
+        panelMotionPrimeFrame = requestAnimationFrame(() => {
+            panelMotionPrimeFrame = 0;
+            if (!panel.classList.contains('show')) {
+                const geometry = preparePanelMotionLayout(panel);
+                preparePanelMotionAnimation(panel, geometry, 0);
+            }
+        });
+    }
+
+    function getPanelMotionKeyframes(geometry = panelMotionGeometry) {
+        const clean = value => Math.abs(value) < 0.05 ? 0 : Number(value.toFixed(2));
+        const transform = (x, y) => `translate3d(${clean(x)}px, ${clean(y)}px, 0)`;
+        const panel = q('mi-p');
+        const shiftX = Number(geometry?.shiftX) || 0;
+        const shiftY = Number(geometry?.shiftY) || 0;
+        const width = Math.max(1, Number(geometry?.width) || panel?.getBoundingClientRect().width || 368);
+        const height = Math.max(1, Number(geometry?.height) || panel?.getBoundingClientRect().height || 680);
+        const placement = panel?.dataset.placement || 'above';
+        const originX = clamp(Number(geometry?.originX) || (width - 28), 0, width);
+        const originY = clamp(Number(geometry?.originY) || (placement === 'below' ? 28 : height - 28), 0, height);
+        const detached = placement === 'detached';
+        const revealFromTop = placement === 'below' || (placement === 'detached' && shiftY < 0);
+        const neckHalfWidth = clamp(width * 0.045, 14, 18);
+        const anchorLeftInset = Math.max(0, originX - neckHalfWidth);
+        const anchorRightInset = Math.max(0, width - originX - neckHalfWidth);
+        const neckHeight = clamp(height * 0.045, 26, 34);
+        const throatHeight = clamp(height * 0.16, 78, 112);
+        const clip = (visibleHeight, pinch = 0, radius = 22) => {
+            const safeVisibleHeight = clamp(visibleHeight, 0, height);
+            const revealProgress = safeVisibleHeight / height;
+            const hiddenY = Math.max(0, height - safeVisibleHeight);
+            const top = detached ? originY * (1 - revealProgress) : revealFromTop ? 0 : hiddenY;
+            const bottom = detached ? (height - originY) * (1 - revealProgress) : revealFromTop ? hiddenY : 0;
+            return `inset(${clean(top)}px ${clean(anchorRightInset * pinch)}px ${clean(bottom)}px ${clean(anchorLeftInset * pinch)}px round ${clean(radius)}px)`;
+        };
+        const overshootX = shiftX === 0 ? 0 : -Math.sign(shiftX) * 0.7;
+        const overshootY = shiftY === 0 ? (revealFromTop ? 1.6 : -1.6) : -Math.sign(shiftY) * 1.7;
+        const settleX = overshootX === 0 ? 0 : -overshootX * 0.34;
+        const settleY = -overshootY * 0.34;
+        return [
+            {
+                offset: 0,
+                opacity: 0.001,
+                transform: transform(shiftX, shiftY),
+                clipPath: clip(neckHeight, 1, 28),
+                easing: 'cubic-bezier(0.2, 0.72, 0.18, 1)'
+            },
+            {
+                offset: 0.12,
+                opacity: 0.78,
+                transform: transform(shiftX * 0.72, shiftY * 0.72),
+                clipPath: clip(throatHeight, 0.76, 27),
+                easing: 'cubic-bezier(0.16, 0.9, 0.18, 1)'
+            },
+            {
+                offset: 0.4,
+                opacity: 1,
+                transform: transform(shiftX * 0.18, shiftY * 0.18),
+                clipPath: clip(height * 0.68, 0.08, 24),
+                easing: 'cubic-bezier(0.16, 0.84, 0.2, 1)'
+            },
+            {
+                offset: 0.68,
+                opacity: 1,
+                transform: transform(overshootX, overshootY),
+                clipPath: clip(height * 0.98, 0.008, 22),
+                easing: 'cubic-bezier(0.22, 0.78, 0.2, 1)'
+            },
+            {
+                offset: 0.84,
+                opacity: 1,
+                transform: transform(settleX, settleY),
+                clipPath: clip(height, 0, 22),
+                easing: 'cubic-bezier(0.24, 0.76, 0.2, 1)'
+            },
+            {
+                offset: 1,
+                opacity: 1,
+                transform: transform(0, 0),
+                clipPath: clip(height, 0, 22)
+            }
+        ];
+    }
+
+    function getPanelMotionAnimationKey(geometry = panelMotionGeometry) {
+        return [
+            panelMotionLayoutKey,
+            Number(geometry?.originX || 0).toFixed(2),
+            Number(geometry?.originY || 0).toFixed(2),
+            Number(geometry?.width || 0).toFixed(2),
+            Number(geometry?.height || 0).toFixed(2),
+            Number(geometry?.shiftX || 0).toFixed(2),
+            Number(geometry?.shiftY || 0).toFixed(2)
+        ].join('|');
+    }
+
+    function preparePanelMotionAnimation(panel, geometry = panelMotionGeometry, initialTime = null) {
+        if (!panel || prefersReducedMotion() || typeof panel.animate !== 'function') return null;
+        const nextKey = getPanelMotionAnimationKey(geometry);
+        if (panelMotionAnimation && panelMotionAnimationKey === nextKey) return panelMotionAnimation;
+
+        if (panelMotionAnimation) {
+            panelMotionAnimation.onfinish = null;
+            panelMotionAnimation.oncancel = null;
+            panelMotionAnimation.cancel();
+        }
+
+        const animation = panel.animate(getPanelMotionKeyframes(geometry), {
+            duration: PANEL_MOTION_DURATION,
+            easing: 'linear',
+            fill: 'both'
+        });
+        animation.pause();
+        animation.currentTime = Number.isFinite(initialTime)
+            ? initialTime
+            : panel.classList.contains('show') ? PANEL_MOTION_DURATION : 0;
+        panelMotionAnimation = animation;
+        panelMotionAnimationKey = nextKey;
+        panelMotionOpening = null;
+        return animation;
+    }
+
+    function clearPanelMotionAnimation(panel = q('mi-p'), finalOpen = false) {
+        panelMotionGeneration += 1;
+        const animation = panelMotionAnimation;
+        panelMotionAnimation = null;
+        panelMotionAnimationKey = '';
+        panelMotionOpening = null;
+        if (animation) {
+            animation.onfinish = null;
+            animation.oncancel = null;
+        }
+        releasePanelMotionPrime(panel);
+        panel?.classList.remove('is-opening', 'is-closing', 'is-motion-active');
+        q('mi-backdrop')?.classList.remove('is-motion-active');
+        if (finalOpen) panel?.classList.add('show');
+        else panel?.classList.remove('show');
+        animation?.cancel();
+        resumeDeferredUiWork();
+    }
+
+    function completePanelMotion(panel, opening, generation) {
+        if (generation !== panelMotionGeneration || !panel) return;
+        const animation = panelMotionAnimation;
+        panelMotionOpening = null;
+        if (animation) animation.onfinish = null;
+        releasePanelMotionPrime(panel);
+        panel.classList.remove('is-opening', 'is-closing', 'is-motion-active');
+        q('mi-backdrop')?.classList.remove('is-motion-active');
+        if (opening) {
+            panel.classList.add('show');
+        } else {
+            panelMotionAnimation = null;
+            panelMotionAnimationKey = '';
+            panel.classList.remove('show');
+            setPanelView('main', false);
+            invalidatePanelMotionLayout(panel);
+            schedulePanelMotionPreparation(panel);
+            animation?.cancel();
+        }
+        resumeDeferredUiWork();
+    }
+
+    function startPanelMotion(panel, opening, geometry = panelMotionGeometry) {
+        if (!panel) return false;
+        if (prefersReducedMotion() || typeof panel.animate !== 'function') {
+            clearPanelMotionAnimation(panel, opening);
+            return false;
+        }
+
+        if (panelMotionAnimation && panelMotionOpening === opening) return true;
+        const generation = ++panelMotionGeneration;
+        const expectedKey = getPanelMotionAnimationKey(geometry);
+        let animation = panelMotionAnimation;
+        if (!animation || panelMotionAnimationKey !== expectedKey) {
+            animation = preparePanelMotionAnimation(panel, geometry, opening ? 0 : PANEL_MOTION_DURATION);
+        }
+        if (!animation) return false;
+
+        panelMotionOpening = opening;
+        panel.classList.toggle('is-opening', opening);
+        panel.classList.toggle('is-closing', !opening);
+        panel.classList.add('is-motion-active');
+        releasePanelMotionPrime(panel);
+        q('mi-backdrop')?.classList.add('is-motion-active');
+        animation.onfinish = () => completePanelMotion(panel, opening, generation);
+        const playbackRate = opening ? 1 : -PANEL_MOTION_CLOSE_RATE;
+        if (typeof animation.updatePlaybackRate === 'function') animation.updatePlaybackRate(playbackRate);
+        else animation.playbackRate = playbackRate;
+        animation.play();
+        return true;
+    }
+
+    function clearButtonMotion(button = q('mi-b'), preservePress = false) {
+        if (buttonPressTimer) {
+            window.clearTimeout(buttonPressTimer);
+            buttonPressTimer = 0;
+        }
+        if (buttonMotionTimer) {
+            window.clearTimeout(buttonMotionTimer);
+            buttonMotionTimer = 0;
+        }
+        if (panelFocusTimer) {
+            window.clearTimeout(panelFocusTimer);
+            panelFocusTimer = 0;
+        }
+        button?.classList.remove('is-closing', 'is-motion-active');
+        if (!preservePress) button?.classList.remove('panel-primed');
+    }
+
+    function setIconMotionTargets(button, cycle = iconMotionCycle) {
+        if (!button) return;
+        const safeCycle = Number.isFinite(cycle) ? Math.max(0, cycle) : 0;
+        button.style.setProperty('--mi-orbit-open-angle', `${(safeCycle * 360) + 224}deg`);
+        button.style.setProperty('--mi-core-open-angle', `${(-safeCycle * 360) - 202}deg`);
+        button.style.setProperty('--mi-orbit-close-angle', `${(safeCycle + 1) * 360}deg`);
+        button.style.setProperty('--mi-core-close-angle', `${-(safeCycle + 1) * 360}deg`);
+    }
+
+    function finishButtonMotion(button, generation, opening) {
+        if (generation !== panelToggleGeneration) return;
+        if (buttonPressTimer) {
+            window.clearTimeout(buttonPressTimer);
+            buttonPressTimer = 0;
+        }
+        if (buttonMotionTimer) {
+            window.clearTimeout(buttonMotionTimer);
+            buttonMotionTimer = 0;
+        }
+        button?.classList.remove('panel-primed', 'is-closing', 'is-motion-active');
+        if (!opening) {
+            iconMotionCycle = 0;
+            setIconMotionTargets(button, 0);
+        }
+    }
+
+    function beginButtonMotion(button, opening) {
+        const preservePress = Boolean(opening && button?.classList.contains('panel-primed'));
+        clearButtonMotion(button, preservePress);
+        const generation = ++panelToggleGeneration;
+        const reducedMotion = prefersReducedMotion();
+        if (opening) {
+            setIconMotionTargets(button, iconMotionCycle);
+        } else {
+            iconMotionCycle += 1;
+            setIconMotionTargets(button, iconMotionCycle - 1);
+        }
+
+        if (reducedMotion) {
+            button?.classList.remove('panel-primed', 'is-closing', 'is-motion-active');
+            if (!opening) {
+                iconMotionCycle = 0;
+                setIconMotionTargets(button, 0);
+            }
+            return { generation, reducedMotion };
+        }
+
+        button?.classList.add('is-motion-active');
+        if (opening) {
+            if (preservePress) {
+                buttonPressTimer = window.setTimeout(() => {
+                    if (generation !== panelToggleGeneration) return;
+                    buttonPressTimer = 0;
+                    button?.classList.remove('panel-primed');
+                }, 42);
+            }
+        } else {
+            button?.classList.remove('panel-primed');
+            button?.classList.add('is-closing');
+        }
+
+        buttonMotionTimer = window.setTimeout(
+            () => finishButtonMotion(button, generation, opening),
+            opening ? 620 : 380
+        );
+        return { generation, reducedMotion };
+    }
+
+    function schedulePanelOpenFocus(target, generation, reducedMotion) {
+        if (panelFocusTimer) window.clearTimeout(panelFocusTimer);
+        panelFocusTimer = window.setTimeout(() => {
+            panelFocusTimer = 0;
+            if (generation !== panelToggleGeneration || !q('mi-p')?.classList.contains('show')) return;
+            schedulePanelFocus(target);
+        }, reducedMotion ? 32 : 54);
     }
 
     function getPanelFocusables() {
@@ -3337,7 +3930,13 @@
     }
 
     function trapPanelFocus(event) {
-        if (event.key !== 'Tab' || !q('mi-p')?.classList.contains('show')) return;
+        const panel = q('mi-p');
+        if (
+            event.key !== 'Tab'
+            || !panel?.classList.contains('show')
+            || panel.classList.contains('is-closing')
+            || panel.getAttribute('aria-hidden') === 'true'
+        ) return;
         const focusables = getPanelFocusables();
         if (!focusables.length) {
             event.preventDefault();
@@ -3359,40 +3958,70 @@
     }
 
     function showPanel(panel = q('mi-p')) {
-        if (!panel || panel.classList.contains('show')) return;
-        lastFocusedElement = document.activeElement instanceof HTMLElement ? document.activeElement : q('mi-b');
-        setPanelView('main', false);
-        positionFloatingPanel(panel);
+        if (!panel) return;
+        const reversingClose = panel.classList.contains('is-closing');
+        if (panel.classList.contains('show') && !reversingClose) return;
+        armPanelFirstPaintForInteraction(panel);
+        if (!reversingClose) {
+            lastFocusedElement = document.activeElement instanceof HTMLElement ? document.activeElement : q('mi-b');
+        }
+        panel.toggleAttribute('inert', false);
+        if (!reversingClose) setPanelView('main', false);
+        const geometry = panelMotionAnimation ? panelMotionGeometry : preparePanelMotionLayout(panel);
+        const button = q('mi-b');
+        const motion = beginButtonMotion(button, true);
         panel.classList.add('show');
         panel.setAttribute('aria-hidden', 'false');
-        const button = q('mi-b');
         button?.classList.add('panel-open');
         button?.setAttribute('aria-expanded', 'true');
+        startPanelMotion(panel, true, geometry);
         updateBackdrop();
-        schedulePanelFocus(q('mi-sel-btn'));
+        consumePanelFirstPaintPreparation(panel);
+        schedulePanelOpenFocus(q('mi-sel-btn'), motion.generation, motion.reducedMotion);
     }
 
-    function hidePanel(panel = q('mi-p')) {
+    function hidePanel(panel = q('mi-p'), options = {}) {
         if (!panel || !panel.classList.contains('show')) return;
+        const immediate = Boolean(options?.immediate);
+        if (panel.classList.contains('is-closing') && !immediate) return;
         closeDropdown(false);
         q('mi-lang-picker')?.classList.remove('open');
         q('mi-lang-menu')?.classList.remove('show');
         q('mi-lang-trigger')?.setAttribute('aria-expanded', 'false');
         q('mi-lang-menu')?.setAttribute('aria-hidden', 'true');
         q('mi-lang-menu')?.toggleAttribute('inert', true);
-        panel.classList.remove('show');
-        panel.setAttribute('aria-hidden', 'true');
         const button = q('mi-b');
+        const focusTarget = lastFocusedElement?.isConnected && !panel.contains(lastFocusedElement)
+            ? lastFocusedElement
+            : button;
+        focusTarget?.focus({ preventScroll: true });
+        if (panel.contains(document.activeElement)) button?.focus({ preventScroll: true });
+        panel.toggleAttribute('inert', true);
+        if (immediate) {
+            clearButtonMotion(button);
+            iconMotionCycle = 0;
+            setIconMotionTargets(button, 0);
+        } else {
+            beginButtonMotion(button, false);
+        }
+        panel.setAttribute('aria-hidden', 'true');
         button?.classList.remove('panel-open');
         button?.setAttribute('aria-expanded', 'false');
+        let animated = false;
+        if (immediate) clearPanelMotionAnimation(panel, false);
+        else animated = startPanelMotion(panel, false, panelMotionGeometry);
+        if (!animated) {
+            setPanelView('main', false);
+            invalidatePanelMotionLayout(panel);
+            if (!immediate) schedulePanelMotionPreparation(panel);
+        }
         updateBackdrop();
-        const focusTarget = lastFocusedElement?.isConnected ? lastFocusedElement : button;
-        schedulePanelFocus(focusTarget);
     }
 
     function togglePanel(panel = q('mi-p')) {
         if (!panel) return;
-        if (panel.classList.contains('show')) hidePanel(panel);
+        if (panel.classList.contains('is-closing')) showPanel(panel);
+        else if (panel.classList.contains('show')) hidePanel(panel);
         else showPanel(panel);
     }
 
@@ -3783,6 +4412,7 @@
 
         const track = container.querySelector('.mi-effort-track');
         track?.style.setProperty('--mi-effort-index', String(selectedIndex));
+        track?.style.setProperty('--mi-effort-glass-x', `${(selectedIndex + 0.5) * 25}%`);
         track?.classList.toggle('is-disabled', !S.effortOn);
         container.querySelectorAll('.mi-g-item').forEach(option => {
             const effort = option.dataset.e;
@@ -3811,10 +4441,27 @@
         if (entry?.workMode) badges.push('WM');
         if (entry?.deprecated) badges.push('↓');
         const meta = badges.join(' · ');
-        const label = MENU_LABELS[id] || entry?.categoryLabel || name;
-        const subParts = [name];
+        const isOnlineCatalog = isLiveCatalogModel(id);
+        const onlineState = isOnlineCatalog
+            ? `<span class="mi-source-state" aria-label="${escapeHtml(t('online'))}"><span class="mi-source-dot" aria-hidden="true"></span><span>${escapeHtml(t('online'))}</span></span>`
+            : '';
+        const mappedVariant = String(MENU_LABELS[id] || '').trim();
+        const catalogVariant = String(entry?.categoryLabel || '').trim();
+        const variant = mappedVariant || catalogVariant;
+        const fullName = String(name || id).trim();
+        const suffixMatches = Boolean(variant)
+            && fullName.toLowerCase().endsWith(` ${variant.toLowerCase()}`);
+        const promoteVariant = Boolean(variant)
+            && variant.toLowerCase() !== fullName.toLowerCase()
+            && (Boolean(mappedVariant) || suffixMatches);
+        const title = promoteVariant ? variant : fullName;
+        const modelContext = promoteVariant
+            ? (suffixMatches ? fullName.slice(0, -variant.length).trim() : fullName)
+            : '';
+        const subParts = [modelContext];
         if (entry?.tagline) subParts.push(entry.tagline);
         else if (entry?.shortExplainer) subParts.push(entry.shortExplainer);
+        if (!subParts.some(Boolean) && id && id !== title) subParts.push(id);
         const sub = subParts.filter(Boolean).join(' · ');
         const details = escapeHtml(JSON.stringify({
             id,
@@ -3827,11 +4474,12 @@
             workMode: Boolean(entry?.workMode),
             deprecated: Boolean(entry?.deprecated),
             deprecationDate: entry?.deprecationDate || '',
-            official: Boolean(entry)
+            official: Boolean(entry),
+            online: isOnlineCatalog
         }));
-        return `<button type="button" role="option" aria-selected="${S.model === id}" class="mi-opt ${S.model === id ? 'active' : ''} ${entry ? 'official' : ''} ${entry?.deprecated ? 'deprecated' : ''} ${entry?.workMode ? 'work-mode' : ''}" data-id="${escapeHtml(id)}" data-details="${details}">
+        return `<button type="button" role="option" tabindex="-1" aria-selected="${S.model === id}" class="mi-opt ${S.model === id ? 'active' : ''} ${entry ? 'official' : ''} ${isOnlineCatalog ? 'is-online' : ''} ${entry?.deprecated ? 'deprecated' : ''} ${entry?.workMode ? 'work-mode' : ''}" data-id="${escapeHtml(id)}" data-details="${details}">
             <div class="mi-opt-body">
-                <span class="txt">${escapeHtml(label)}</span>
+                <span class="mi-opt-title-row"><span class="txt">${escapeHtml(title)}</span>${onlineState}</span>
                 <span class="sub">${escapeHtml(sub)}</span>
             </div>
             <span class="meta">${escapeHtml(meta)}</span>
@@ -3851,7 +4499,7 @@
             official: true,
             agent: true
         }));
-        return `<button type="button" role="option" aria-selected="${S.model === id}" class="mi-opt mi-agent-opt ${S.model === id ? 'active' : ''} official" data-id="${escapeHtml(id)}" data-details="${details}">
+        return `<button type="button" role="option" tabindex="-1" aria-selected="${S.model === id}" class="mi-opt mi-agent-opt ${S.model === id ? 'active' : ''} official" data-id="${escapeHtml(id)}" data-details="${details}">
             <div class="mi-opt-body">
                 <span class="txt">${escapeHtml(agent.name || agent.id)}</span>
                 <span class="sub">${escapeHtml(agent.id)}</span>
@@ -3864,22 +4512,25 @@
     function getMenuFilter() {
         const raw = String(modelMenuQuery || '').trim();
         const slash = raw.startsWith('/');
+        const query = slash ? raw.slice(1).trim() : raw;
         return {
             raw,
-            query: slash ? raw.slice(1).trim() : raw,
+            query,
+            terms: query.toLowerCase().split(/\s+/).filter(Boolean),
             agentOnly: modelMenuAgentOnly || slash
         };
     }
 
-    function menuMatches(values, query) {
-        const normalized = String(query || '').trim().toLowerCase();
-        if (!normalized) return true;
+    function menuMatches(values, terms) {
+        const needles = Array.isArray(terms)
+            ? terms
+            : String(terms || '').trim().toLowerCase().split(/\s+/).filter(Boolean);
+        if (!needles.length) return true;
         const haystack = values.filter(Boolean).join(' ').toLowerCase();
-        return normalized.split(/\s+/).filter(Boolean).every(part => haystack.includes(part));
+        return needles.every(part => haystack.includes(part));
     }
 
-    function renderMenuSearch() {
-        const filter = getMenuFilter();
+    function renderMenuSearch(filter = getMenuFilter()) {
         const hasValue = Boolean(filter.raw);
         return `<div class="mi-menu-search ${filter.agentOnly ? 'agent-mode' : ''} ${hasValue ? 'has-value' : ''}">
             <div class="mi-menu-search-head">
@@ -3887,7 +4538,7 @@
                 <span class="mi-menu-search-mode">${escapeHtml(filter.agentOnly ? t('search_agent_mode') : t('search_models'))}</span>
             </div>
             <div class="mi-menu-search-box">
-                <span class="mi-menu-search-icon" aria-hidden="true">⌕</span>
+                <span class="mi-menu-search-icon" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><circle cx="10.6" cy="10.6" r="5.7"></circle><path d="m15.1 15.1 4.2 4.2"></path></svg></span>
                 <input id="mi-menu-search" type="text" value="${escapeHtml(modelMenuQuery)}" placeholder="${escapeHtml(t('search_placeholder'))}" autocomplete="off" spellcheck="false">
                 <button class="mi-menu-search-clear" type="button" data-action="clear-search" title="${escapeHtml(t('search_clear'))}" aria-label="${escapeHtml(t('search_clear'))}">×</button>
             </div>
@@ -3895,11 +4546,40 @@
         </div>`;
     }
 
+    function syncMenuSearchUi(dropdown, filter) {
+        const searchWrap = dropdown.querySelector('.mi-menu-search');
+        const search = dropdown.querySelector('#mi-menu-search');
+        if (!searchWrap || !search) return false;
+
+        searchWrap.classList.toggle('agent-mode', filter.agentOnly);
+        searchWrap.classList.toggle('has-value', Boolean(filter.raw));
+        const title = searchWrap.querySelector('.mi-menu-search-title');
+        const mode = searchWrap.querySelector('.mi-menu-search-mode');
+        const clear = searchWrap.querySelector('[data-action=clear-search]');
+        const hint = searchWrap.querySelector('.mi-menu-search-hint');
+        if (title) title.textContent = t('search_quick_title');
+        if (mode) mode.textContent = t(filter.agentOnly ? 'search_agent_mode' : 'search_models');
+        if (search.value !== modelMenuQuery) search.value = modelMenuQuery;
+        search.placeholder = t('search_placeholder');
+        if (clear) {
+            clear.title = t('search_clear');
+            clear.setAttribute('aria-label', t('search_clear'));
+        }
+        if (hint) {
+            const label = t(filter.agentOnly ? 'section_workspace_agents' : 'search_models_hint');
+            const key = hint.querySelector('.mi-menu-key');
+            const textNode = key?.nextSibling;
+            if (textNode?.nodeType === Node.TEXT_NODE) textNode.nodeValue = label;
+            else hint.append(label);
+        }
+        return true;
+    }
+
     function renderEmptyMenuNotice() {
         return `<div class="mi-menu-empty">${escapeHtml(t('no_menu_results'))}</div>`;
     }
 
-    function renderDropdown() {
+    function renderDropdown(options = {}) {
         hideTooltip();
         const dropdown = q('mi-drop');
         const label = q('mi-sel-txt');
@@ -3913,17 +4593,18 @@
             label.title = S.model || t('default_model');
             q('mi-sel-btn')?.setAttribute('aria-label', `${t('choose_model')}: ${displayName}`);
         }
+        if (!options.force && !dropdown.classList.contains('show')) return;
 
         let visibleGroups = 0;
         let html = '';
 
-        if (!filter.agentOnly && menuMatches([t('default_model'), t('auto_label'), 'auto default'], filter.query)) {
+        if (!filter.agentOnly && menuMatches([t('default_model'), t('auto_label'), 'auto default'], filter.terms)) {
             visibleGroups += 1;
             html += `
             <div class="mi-menu-section">
                 <div class="mi-opt-grp">${escapeHtml(t('group_default'))}</div>
                 <div class="mi-family">
-                    <button type="button" role="option" aria-selected="${!S.model || S.model === 'auto'}" class="mi-opt ${(!S.model || S.model === 'auto') ? 'active' : ''}" data-id="" title="${escapeHtml(t('default_model'))}">
+                    <button type="button" role="option" tabindex="-1" aria-selected="${!S.model || S.model === 'auto'}" class="mi-opt ${(!S.model || S.model === 'auto') ? 'active' : ''}" data-id="" title="${escapeHtml(t('default_model'))}">
                         <div class="mi-opt-body">
                             <span class="txt">${escapeHtml(t('default_model'))}</span>
                             <span class="sub">${escapeHtml(t('auto_label'))}</span>
@@ -3946,6 +4627,7 @@
             if (!isHiddenModelId(item.id)) merged.set(item.id, { id: item.id, name: item.name || item.id, entry: item });
         });
 
+        const mergedItems = [...merged.values()];
         const remaining = new Set(merged.keys());
 
         const agentItems = [...S.agents];
@@ -3953,7 +4635,7 @@
         if (selectedAgentId && !agentItems.some(agent => agent.id === selectedAgentId)) {
             agentItems.unshift({ id: selectedAgentId, name: selectedAgentId, source: 'selected', skills: [], tools: [] });
         }
-        const visibleAgents = agentItems.filter(agent => menuMatches([agent.id, agent.name, agent.desc, agent.source, ...(agent.skills || []), ...(agent.tools || [])], filter.query));
+        const visibleAgents = agentItems.filter(agent => menuMatches([agent.id, agent.name, agent.desc, agent.source, ...(agent.skills || []), ...(agent.tools || [])], filter.terms));
         if (visibleAgents.length && filter.agentOnly) {
             visibleGroups += 1;
             html += `<div class="mi-menu-section mi-agent-section"><div class="mi-opt-grp">${escapeHtml(t('section_workspace_agents'))}</div><div class="mi-family">`;
@@ -3964,9 +4646,9 @@
         if (!filter.agentOnly) for (const section of MODEL_MENU_SECTIONS) {
             let sectionHtml = '';
             for (const [familyName, matcher] of section.families) {
-                const familyItems = [...merged.values()]
+                const familyItems = mergedItems
                     .filter(item => remaining.has(item.id) && matcher.test(item.id))
-                    .filter(item => menuMatches([item.id, item.name, MENU_LABELS[item.id], item.entry?.desc, item.entry?.reasoning, item.entry?.versionLabel], filter.query))
+                    .filter(item => menuMatches([item.id, item.name, MENU_LABELS[item.id], item.entry?.categoryLabel, item.entry?.desc, item.entry?.reasoning, item.entry?.versionLabel], filter.terms))
                     .sort((a, b) => ((PRESET_ORDER.get(a.id) ?? 999) - (PRESET_ORDER.get(b.id) ?? 999)) || sortModelEntries(a, b));
                 if (!familyItems.length) continue;
 
@@ -3981,9 +4663,9 @@
             }
         }
 
-        const discovered = [...merged.values()]
+        const discovered = mergedItems
             .filter(item => remaining.has(item.id))
-            .filter(item => !filter.agentOnly && menuMatches([item.id, item.name, item.entry?.desc, item.entry?.reasoning, item.entry?.versionLabel], filter.query))
+            .filter(item => !filter.agentOnly && menuMatches([item.id, item.name, item.entry?.desc, item.entry?.reasoning, item.entry?.versionLabel], filter.terms))
             .sort((a, b) => sortModelEntries(a, b));
         if (discovered.length) {
             visibleGroups += 1;
@@ -3994,19 +4676,25 @@
 
         const customItems = S.custom
             .filter(id => !isHiddenModelId(id))
-            .filter(id => !filter.agentOnly && menuMatches([id, t('custom_subtitle')], filter.query));
+            .filter(id => !filter.agentOnly && menuMatches([id, t('custom_subtitle')], filter.terms));
         if (customItems.length) {
             visibleGroups += 1;
             html += `<div class="mi-menu-section"><div class="mi-opt-grp">${escapeHtml(t('custom_group'))}</div><div class="mi-family">`;
             customItems.forEach(id => {
-                html += `<button type="button" role="option" aria-selected="${S.model === id}" class="mi-opt ${S.model === id ? 'active' : ''}" data-id="${escapeHtml(id)}" data-details="{}">
-                    <div class="mi-opt-body">
-                        <span class="txt">${escapeHtml(id)}</span>
-                        <span class="sub">${escapeHtml(t('custom_subtitle'))}</span>
-                    </div>
-                    <span class="meta"></span>
-                    <span class="mi-check" aria-hidden="true">&#10003;</span>
-                </button>`;
+                const deleteLabel = `${t('delete_custom_model')}: ${id}`;
+                html += `<div class="mi-custom-row" role="presentation">
+                    <button type="button" role="option" tabindex="-1" aria-selected="${S.model === id}" class="mi-opt mi-custom-opt ${S.model === id ? 'active' : ''}" data-id="${escapeHtml(id)}" data-custom="true" data-details="{}">
+                        <div class="mi-opt-body">
+                            <span class="txt">${escapeHtml(id)}</span>
+                            <span class="sub">${escapeHtml(t('custom_subtitle'))}</span>
+                        </div>
+                        <span class="meta"></span>
+                        <span class="mi-check" aria-hidden="true">&#10003;</span>
+                    </button>
+                    <button type="button" class="mi-custom-remove" data-action="remove-custom" data-id="${escapeHtml(id)}" title="${escapeHtml(deleteLabel)}" aria-label="${escapeHtml(deleteLabel)}">
+                        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M8.5 8.5v9m7-9v9M5.5 6h13M9 6l.8-2h4.4l.8 2m1.7 0-.7 14H8L7.3 6"></path></svg>
+                    </button>
+                </div>`;
             });
             html += `</div></div>`;
         }
@@ -4019,12 +4707,19 @@
         }
 
         if (!visibleGroups) html += renderEmptyMenuNotice();
-        dropdown.innerHTML = `${renderMenuSearch()}<div id="mi-menu-options" class="mi-menu-options" role="listbox" aria-label="${escapeHtml(t('choose_model'))}">${html}</div>`;
-        dropdown.querySelectorAll('.mi-opt').forEach(option => { option.tabIndex = -1; });
+        let optionsContainer = dropdown.querySelector('#mi-menu-options');
+        let rebuiltSearch = false;
+        if (!optionsContainer || !syncMenuSearchUi(dropdown, filter)) {
+            dropdown.innerHTML = `${renderMenuSearch(filter)}<div id="mi-menu-options" class="mi-menu-options" role="listbox" aria-label="${escapeHtml(t('choose_model'))}">${html}</div>`;
+            optionsContainer = dropdown.querySelector('#mi-menu-options');
+            rebuiltSearch = true;
+        } else {
+            optionsContainer.setAttribute('aria-label', t('choose_model'));
+            optionsContainer.innerHTML = html;
+        }
         bindTooltipEvents(dropdown);
-        if (dropdown.classList.contains('show')) positionDropdown();
         const search = dropdown.querySelector('#mi-menu-search');
-        if (search && keepSearchFocus) {
+        if (search && keepSearchFocus && rebuiltSearch) {
             requestAnimationFrame(() => {
                 search.focus();
                 const pos = search.value.length;
@@ -4034,12 +4729,18 @@
     }
 
     let tooltipEl = null;
-    let tooltipTimeout = null;
+    let tooltipShowTimer = 0;
+    let tooltipHideTimer = 0;
+    const tooltipBoundContainers = new WeakSet();
 
     function showTooltip(target, details) {
-        if (tooltipTimeout) {
-            clearTimeout(tooltipTimeout);
-            tooltipTimeout = null;
+        if (tooltipShowTimer) {
+            window.clearTimeout(tooltipShowTimer);
+            tooltipShowTimer = 0;
+        }
+        if (tooltipHideTimer) {
+            window.clearTimeout(tooltipHideTimer);
+            tooltipHideTimer = 0;
         }
         tooltipEl = getTooltipElement();
         tooltipEl.classList.remove('show', 'hiding');
@@ -4047,7 +4748,8 @@
         const d = typeof details === 'string' ? JSON.parse(details) : details;
         if (!d?.id) return;
 
-        let html = `<div class="mi-tooltip-title">${escapeHtml(d.name || d.id)}${d.official ? `<span class="mi-online-badge">${escapeHtml(d.agent ? t('workspace_agent_detected') : t('online'))}</span>` : ''}</div>`;
+        const statusLabel = d.agent ? t('workspace_agent_detected') : d.online ? t('online') : '';
+        let html = `<div class="mi-tooltip-title">${escapeHtml(d.name || d.id)}${statusLabel ? `<span class="mi-online-badge">${escapeHtml(statusLabel)}</span>` : ''}</div>`;
         html += `<div class="mi-tooltip-id">${escapeHtml(d.id)}</div>`;
         if (d.tokens) html += `<div class="mi-tooltip-row"><span class="k">${escapeHtml(t('tooltip_context'))}</span><span class="v">${fmtTok(d.tokens)} tokens</span></div>`;
         if (d.reasoning) html += `<div class="mi-tooltip-row"><span class="k">${escapeHtml(t('tooltip_reasoning'))}</span><span class="v">${escapeHtml(d.reasoning)}</span></div>`;
@@ -4092,11 +4794,17 @@
     }
 
     function hideTooltip() {
+        if (tooltipShowTimer) {
+            window.clearTimeout(tooltipShowTimer);
+            tooltipShowTimer = 0;
+        }
         tooltipEl = tooltipEl || document.querySelector('.mi-tooltip');
         if (!tooltipEl || !tooltipEl.classList.contains('show')) return;
         tooltipEl.classList.add('hiding');
         tooltipEl.classList.remove('show');
-        tooltipTimeout = window.setTimeout(() => {
+        if (tooltipHideTimer) window.clearTimeout(tooltipHideTimer);
+        tooltipHideTimer = window.setTimeout(() => {
+            tooltipHideTimer = 0;
             document.querySelectorAll('.mi-tooltip').forEach((node, index) => {
                 if (index === 0) node.classList.remove('hiding');
                 else node.remove();
@@ -4105,18 +4813,20 @@
     }
 
     function bindTooltipEvents(container) {
-        container.querySelectorAll('.mi-opt[data-details]').forEach(option => {
-            option.addEventListener('mouseenter', () => {
-                const details = option.getAttribute('data-details');
-                if (details && details !== '{}') tooltipTimeout = window.setTimeout(() => showTooltip(option, details), 150);
-            });
-            option.addEventListener('mouseleave', () => {
-                if (tooltipTimeout) {
-                    clearTimeout(tooltipTimeout);
-                    tooltipTimeout = null;
-                }
-                hideTooltip();
-            });
+        if (!container || tooltipBoundContainers.has(container)) return;
+        tooltipBoundContainers.add(container);
+        container.addEventListener('mouseover', event => {
+            const option = event.target.closest?.('.mi-opt[data-details]');
+            if (!option || !container.contains(option) || option.contains(event.relatedTarget)) return;
+            const details = option.getAttribute('data-details');
+            if (!details || details === '{}') return;
+            if (tooltipShowTimer) window.clearTimeout(tooltipShowTimer);
+            tooltipShowTimer = window.setTimeout(() => showTooltip(option, details), 150);
+        });
+        container.addEventListener('mouseout', event => {
+            const option = event.target.closest?.('.mi-opt[data-details]');
+            if (!option || !container.contains(option) || option.contains(event.relatedTarget)) return;
+            hideTooltip();
         });
     }
 
@@ -4252,6 +4962,22 @@
         }
         updateUIState();
         animateModelConfirmation();
+    }
+
+    function removeCustomModel(id) {
+        const value = String(id || '').trim();
+        if (!value || !S.custom.includes(value)) return false;
+        const removedCurrentSelection = S.model === value;
+        S.custom = S.custom.filter(item => item !== value);
+        S.recent = S.recent.filter(item => item !== value);
+        saveJson('custom', S.custom);
+        saveJson('recent', S.recent);
+        if (removedCurrentSelection) {
+            S.model = '';
+            saveValue('m', '');
+        }
+        updateUIState();
+        return true;
     }
 
     function syncStateFromStorage() {
@@ -4458,8 +5184,9 @@
         });
         const selectDropdownItem = item => {
             if (!item) return;
-            saveSelection(item.dataset.id || '');
+            const id = item.dataset.id || '';
             closeDropdown(true);
+            saveSelection(id);
             schedulePanelFocus($('mi-sel-btn'));
         };
 
@@ -4495,6 +5222,23 @@
                 requestAnimationFrame(() => $('mi-drop')?.querySelector('#mi-menu-search')?.focus());
                 return;
             }
+            const removeButton = event.target.closest('[data-action="remove-custom"]');
+            if (removeButton) {
+                event.preventDefault();
+                event.stopPropagation();
+                const removeButtons = [...$('mi-drop').querySelectorAll('[data-action="remove-custom"]')];
+                const removeIndex = Math.max(0, removeButtons.indexOf(removeButton));
+                if (removeCustomModel(removeButton.dataset.id || '')) {
+                    requestAnimationFrame(() => {
+                        const nextButtons = [...($('mi-drop')?.querySelectorAll('[data-action="remove-custom"]') || [])];
+                        const nextTarget = nextButtons[Math.min(removeIndex, Math.max(0, nextButtons.length - 1))]
+                            || $('mi-drop')?.querySelector('#mi-menu-search')
+                            || $('mi-sel-btn');
+                        nextTarget?.focus({ preventScroll: true });
+                    });
+                }
+                return;
+            }
             const item = event.target.closest('.mi-opt');
             if (!item) return;
             selectDropdownItem(item);
@@ -4503,7 +5247,7 @@
             if (event.target?.id !== 'mi-menu-search') return;
             modelMenuQuery = event.target.value || '';
             modelMenuAgentOnly = modelMenuQuery.trim().startsWith('/');
-            renderDropdown();
+            scheduleDropdownFilterRender();
         });
         $('mi-drop').addEventListener('keydown', event => {
             const current = event.target.closest?.('.mi-opt');
@@ -4537,6 +5281,15 @@
                 event.preventDefault();
                 event.stopPropagation();
                 focusDropdownOption(event.key === 'Home' ? 0 : options.length - 1);
+                return;
+            }
+            if (current?.dataset.custom === 'true' && (event.key === 'Delete' || event.key === 'Backspace')) {
+                event.preventDefault();
+                event.stopPropagation();
+                const deletedIndex = Math.max(0, currentIndex);
+                if (removeCustomModel(current.dataset.id || '')) {
+                    requestAnimationFrame(() => focusDropdownOption(Math.min(deletedIndex, Math.max(0, getDropdownOptions().length - 1))));
+                }
                 return;
             }
             if (event.key === 'Enter' || (current && event.key === ' ')) {
@@ -4597,6 +5350,14 @@
                 schedulePanelFocus(q('mi-grid-eff')?.querySelector(`[data-e="${S.effort}"]`));
             }
         };
+        const endEffortPress = () => q('mi-grid-eff')?.classList.remove('is-pressing');
+        $('mi-grid-eff').addEventListener('pointerdown', event => {
+            const option = event.target.closest('.mi-g-item');
+            if (option && !option.disabled) q('mi-grid-eff')?.classList.add('is-pressing');
+        }, { passive: true });
+        $('mi-grid-eff').addEventListener('pointerup', endEffortPress, { passive: true });
+        $('mi-grid-eff').addEventListener('pointercancel', endEffortPress, { passive: true });
+        $('mi-grid-eff').addEventListener('lostpointercapture', endEffortPress, { passive: true });
         $('mi-grid-eff').addEventListener('keydown', event => {
             const option = event.target.closest('.mi-g-item');
             if (!option || option.disabled) return;
@@ -4798,14 +5559,11 @@
             dragY = 0;
             startX = event.clientX;
             startY = event.clientY;
-            const rect = root.getBoundingClientRect();
-            initLeft = rect.left;
-            initTop = rect.top;
-            root.style.left = `${initLeft}px`;
-            root.style.top = `${initTop}px`;
-            root.style.right = 'auto';
-            root.style.bottom = 'auto';
             button.setPointerCapture(event.pointerId);
+            if (!mainPanel.classList.contains('show')) {
+                button.classList.add('panel-primed');
+                primePanelMotion(mainPanel);
+            }
         });
         button?.addEventListener('pointermove', event => {
             if (activePointerId !== event.pointerId || event.buttons !== 1) return;
@@ -4813,8 +5571,17 @@
             dragY = event.clientY - startY;
             if (!isDrag && Math.hypot(dragX, dragY) > 5) {
                 isDrag = true;
+                const rect = root.getBoundingClientRect();
+                initLeft = rect.left;
+                initTop = rect.top;
+                button.classList.remove('panel-primed');
                 closeDropdown(false);
-                hidePanel(mainPanel);
+                hidePanel(mainPanel, { immediate: true });
+                invalidatePanelMotionLayout(mainPanel);
+                root.style.left = `${initLeft}px`;
+                root.style.top = `${initTop}px`;
+                root.style.right = 'auto';
+                root.style.bottom = 'auto';
                 root.style.willChange = 'transform';
                 button.classList.add('dragging');
             }
@@ -4829,10 +5596,19 @@
             if (isDrag) {
                 resetDragVisual();
                 setHostPosition(initLeft + dragX, initTop + dragY, true);
+                invalidatePanelMotionLayout(mainPanel);
+                schedulePanelMotionPreparation(mainPanel);
+                schedulePanelFirstPaintPreparation(mainPanel);
                 suppressClick = true;
                 window.setTimeout(() => { suppressClick = false; }, 120);
             } else {
                 resetDragVisual();
+                window.setTimeout(() => {
+                    if (!mainPanel.classList.contains('show')) {
+                        button.classList.remove('panel-primed');
+                        mainPanel.classList.remove('is-motion-primed');
+                    }
+                }, 180);
             }
             isDrag = false;
             activePointerId = null;
@@ -4840,6 +5616,8 @@
         button?.addEventListener('pointercancel', event => {
             releaseActivePointer(event.pointerId);
             resetDragVisual();
+            button.classList.remove('panel-primed');
+            mainPanel.classList.remove('is-motion-primed');
             isDrag = false;
             activePointerId = null;
         });
@@ -4848,15 +5626,24 @@
             if (isDrag) {
                 resetDragVisual();
                 setHostPosition(initLeft + dragX, initTop + dragY, true);
+                invalidatePanelMotionLayout(mainPanel);
+                schedulePanelMotionPreparation(mainPanel);
+                schedulePanelFirstPaintPreparation(mainPanel);
             } else {
                 resetDragVisual();
             }
+            button.classList.remove('panel-primed');
+            if (!mainPanel.classList.contains('show')) mainPanel.classList.remove('is-motion-primed');
             isDrag = false;
             activePointerId = null;
         });
         button?.addEventListener('click', event => {
             event.stopPropagation();
-            if (suppressClick) return;
+            if (suppressClick) {
+                button.classList.remove('panel-primed');
+                mainPanel.classList.remove('is-motion-primed');
+                return;
+            }
             closeDropdown(false);
             togglePanel(mainPanel);
         });
@@ -4871,7 +5658,16 @@
                 proportionalReposition(prevVW, prevVH);
                 prevVW = window.innerWidth;
                 prevVH = window.innerHeight;
-                if (q('mi-p')?.classList.contains('show')) positionFloatingPanel(q('mi-p'));
+                const panel = q('mi-p');
+                const keepOpen = Boolean(panel?.classList.contains('show') && !panel.classList.contains('is-closing'));
+                if (panel?.classList.contains('show')) clearPanelMotionAnimation(panel, keepOpen);
+                invalidatePanelMotionLayout(panel);
+                if (keepOpen) {
+                    const geometry = preparePanelMotionLayout(panel);
+                    preparePanelMotionAnimation(panel, geometry, PANEL_MOTION_DURATION);
+                }
+                else schedulePanelMotionPreparation(panel);
+                schedulePanelFirstPaintPreparation(panel);
                 if (q('mi-drop')?.classList.contains('show')) positionDropdown();
                 if (q('mi-lang-menu')?.classList.contains('show')) positionLanguageMenu();
             }, 100);
@@ -4913,6 +5709,9 @@
     --mi-ease-out-quart: cubic-bezier(0.25, 1, 0.5, 1);
     --mi-ease-spring: cubic-bezier(0.5, 1.25, 0.75, 1.25);
     --mi-ease-fluid: cubic-bezier(0.32, 0.72, 0, 1);
+    --mi-ease-liquid: cubic-bezier(0.22, 1.22, 0.36, 1);
+    --mi-ease-panel-close: cubic-bezier(0.4, 0, 1, 1);
+    --mi-ease-anchor: cubic-bezier(0.18, 1.08, 0.34, 1);
     position: fixed;
     bottom: 24px;
     right: 24px;
@@ -5001,18 +5800,35 @@
 #mi-backdrop {
     position: fixed;
     inset: 0;
-    background: rgba(3, 5, 8, 0.34);
+    background:
+        radial-gradient(110% 74% at 50% -10%, rgba(255,255,255,0.045), transparent 58%),
+        linear-gradient(180deg, rgba(3, 5, 8, 0.16), rgba(3, 5, 8, 0.30));
+    backdrop-filter: blur(4px) saturate(116%) brightness(0.94);
+    -webkit-backdrop-filter: blur(4px) saturate(116%) brightness(0.94);
     opacity: 0;
     visibility: hidden;
     pointer-events: none;
     z-index: 1;
-    transition: opacity 0.32s var(--mi-ease-fluid), visibility 0s linear 0.32s;
+    backface-visibility: hidden;
+    transform: translateZ(0);
+    transition: opacity 0.36s cubic-bezier(0.3, 0, 0.3, 1), visibility 0s linear 0.36s;
 }
 #mi-backdrop.show {
     opacity: 1;
     visibility: visible;
     pointer-events: auto;
-    transition: opacity 0.36s var(--mi-ease-fluid), visibility 0s linear 0s;
+    transition: opacity 0.30s cubic-bezier(0.16, 0.8, 0.2, 1), visibility 0s linear 0s;
+}
+#mi-backdrop.is-first-paint-warmup,
+#mi-backdrop.is-first-paint-ready {
+    visibility: visible;
+    opacity: 0.001;
+    pointer-events: none;
+}
+#mi-backdrop.is-motion-primed,
+#mi-backdrop.is-motion-active {
+    will-change: opacity;
+    backface-visibility: hidden;
 }
 #mi-b {
     position: relative;
@@ -5032,7 +5848,7 @@
         radial-gradient(circle at 32% 24%, rgba(255,255,255,0.16) 0%, rgba(255,255,255,0.025) 34%, transparent 48%),
         linear-gradient(150deg, rgba(41, 44, 51, 0.98) 0%, rgba(24, 26, 31, 0.99) 58%, rgba(15, 17, 21, 0.99) 100%);
     box-shadow: 0 14px 34px rgba(0,0,0,0.32), 0 4px 12px rgba(0,0,0,0.2), inset 0 1px 0 rgba(255,255,255,0.14), inset 0 -1px 0 rgba(0,0,0,0.5);
-    transition: transform 0.5s var(--mi-ease-fluid), box-shadow 0.42s var(--mi-ease-fluid), border-color 0.32s var(--mi-ease);
+    transition: transform 0.24s var(--mi-ease-anchor), box-shadow 0.26s var(--mi-ease-fluid), border-color 0.2s var(--mi-ease);
     touch-action: none;
     border: 1px solid rgba(255,255,255,0.13);
     z-index: 3;
@@ -5059,18 +5875,30 @@
     transition: opacity 0.42s var(--mi-ease), transform 0.52s var(--mi-ease-fluid);
 }
 #mi-b.panel-open {
-    transform: translate3d(0,-3px,0) scale(0.88) rotate(-6deg);
+    transform: translate3d(0,-2px,0) scale(0.972);
     border-color: rgba(var(--mi-bg-rgb), 0.42);
-    box-shadow: 0 20px 46px rgba(0,0,0,0.38), 0 0 0 8px rgba(var(--mi-bg-rgb), 0.14), 0 0 26px rgba(var(--mi-bg-rgb), 0.2), inset 0 1px 0 rgba(255,255,255,0.2);
+    box-shadow: 0 18px 40px rgba(0,0,0,0.36), 0 0 0 5px rgba(var(--mi-bg-rgb), 0.11), 0 0 22px rgba(var(--mi-bg-rgb), 0.16), inset 0 1px 0 rgba(255,255,255,0.2);
 }
 #mi-b.panel-open::before {
-    opacity: 0.94;
-    transform: scale(1.22);
+    opacity: 0.56;
+    transform: scale(1.08);
 }
 #mi-b.panel-open::after {
     border-color: rgba(255,255,255,0.22);
     box-shadow: inset 0 1px 5px rgba(255,255,255,0.11), inset 0 -3px 8px rgba(0,0,0,0.16);
 }
+#mi-b.panel-primed,
+#mi-b:active:not(.dragging) {
+    transform: translate3d(0, 1px, 0) scale(0.948);
+    transition: transform 0.10s cubic-bezier(0.2, 0.82, 0.2, 1), box-shadow 0.10s var(--mi-ease);
+}
+#mi-b.panel-primed::before {
+    opacity: 0.34;
+    transform: scale(0.96);
+    transition-duration: 0.12s;
+}
+#mi-b.panel-primed,
+#mi-b.is-motion-active { will-change: transform; }
 #mi-b.off {
     background: linear-gradient(135deg, rgba(100,100,105,0.9) 0%, rgba(70,70,75,0.9) 100%);
     box-shadow: var(--mi-shadow-sm);
@@ -5080,7 +5908,6 @@
     box-shadow: 0 22px 48px rgba(0,0,0,0.42), 0 0 0 7px rgba(var(--mi-bg-rgb), 0.12);
     cursor: grabbing;
 }
-#mi-b:active:not(.dragging) { transform: scale(0.95); }
 #mi-ring-wrap {
     position: absolute;
     top: -5px;
@@ -5115,7 +5942,7 @@
     transform-box: view-box;
     transform-origin: center;
     transform: rotate(0deg);
-    transition: transform 0.52s var(--mi-ease-fluid);
+    transition: none;
 }
 #mi-b .mi-brand-orbit {
     fill: none;
@@ -5140,10 +5967,28 @@
 #mi-b .mi-brand-glint {
     fill: #ffffff;
 }
-#mi-b.panel-open #mi-ring-wrap { transform: scale(1.18) rotate(24deg); opacity: 0.94; }
-#mi-b.panel-open .icon { transform: rotate(-12deg) scale(0.86); }
-#mi-b.panel-open .mi-brand-orbit-group { transform: rotate(68deg) scale(1.06); }
-#mi-b.panel-open .mi-brand-core { transform: rotate(-68deg) scale(1.08); }
+#mi-b.panel-open #mi-ring-wrap { transform: scale(1.045); opacity: 0.94; }
+#mi-b.panel-open .icon { transform: scale(0.985); }
+#mi-b.panel-open .mi-brand-orbit-group { transform: rotate(var(--mi-orbit-open-angle, 224deg)) scale(1.012); }
+#mi-b.panel-open .mi-brand-core { transform: rotate(var(--mi-core-open-angle, -202deg)) scale(1.016); }
+#mi-b.panel-open.is-motion-active:not(.is-closing) .mi-brand-orbit-group {
+    transition: transform 0.60s cubic-bezier(0.26, 0.08, 0.18, 1);
+}
+#mi-b.panel-open.is-motion-active:not(.is-closing) .mi-brand-core {
+    transition: transform 0.56s cubic-bezier(0.28, 0.06, 0.18, 1);
+}
+#mi-b.is-closing .mi-brand-orbit-group {
+    transform: rotate(var(--mi-orbit-close-angle, 360deg)) scale(1);
+    transition: transform 0.34s var(--mi-ease-panel-close);
+}
+#mi-b.is-closing .mi-brand-core {
+    transform: rotate(var(--mi-core-close-angle, -360deg)) scale(1);
+    transition: transform 0.32s var(--mi-ease-panel-close);
+}
+#mi-b.is-motion-active .mi-brand-orbit-group,
+#mi-b.is-motion-active .mi-brand-core {
+    will-change: transform;
+}
 #mi-n {
     position: absolute;
     top: -4px;
@@ -5197,66 +6042,130 @@
     right: 0;
     width: 368px;
     max-height: var(--mi-panel-available-height, min(680px, calc(100vh - 96px)));
-    overflow: hidden;
+    overflow: visible;
     border-radius: 22px;
-    background:
-        radial-gradient(120% 78% at 8% -10%, rgba(255,255,255,0.105), transparent 46%),
-        radial-gradient(70% 44% at 100% 0%, rgba(var(--mi-bg-rgb),0.075), transparent 64%),
-        linear-gradient(180deg, rgba(29, 32, 38, 0.94) 0%, rgba(15, 17, 21, 0.965) 100%);
-    backdrop-filter: blur(18px) saturate(138%);
-    -webkit-backdrop-filter: blur(18px) saturate(138%);
-    border: 1px solid rgba(255,255,255,0.105);
-    box-shadow: 0 32px 80px rgba(0,0,0,0.46), 0 12px 30px rgba(0,0,0,0.24), inset 0 1px 0 rgba(255,255,255,0.115);
-    transform-origin: calc(100% - 24px) calc(100% + 24px);
     opacity: 0;
-    transform: translate3d(0, 18px, 0) scale(0.90);
+    transform: none;
+    transform-origin: calc(100% - 24px) calc(100% - 24px);
+    backface-visibility: hidden;
     pointer-events: none;
     visibility: hidden;
     z-index: 2;
     isolation: isolate;
-    contain: layout paint style;
-    transition: opacity 0.26s var(--mi-ease-fluid), transform 0.44s var(--mi-ease-fluid), visibility 0s linear 0.44s;
+    contain: layout style;
+    transition: none;
 }
-#mi-p[data-placement="detached"] { z-index: 4; }
-#mi-p::before {
+#mi-p[data-placement="detached"] {
+    z-index: 2;
+}
+.mi-panel-surface {
+    position: relative;
+    width: 100%;
+    overflow: hidden;
+    border-radius: inherit;
+    background:
+        radial-gradient(118% 86% at 10% -12%, rgba(255,255,255,0.18), transparent 47%),
+        radial-gradient(74% 54% at 100% 0%, rgba(var(--mi-bg-rgb),0.15), transparent 67%),
+        linear-gradient(180deg, rgba(37, 42, 51, 0.56) 0%, rgba(13, 16, 23, 0.66) 100%);
+    backdrop-filter: blur(18px) saturate(162%) brightness(1.07);
+    -webkit-backdrop-filter: blur(18px) saturate(162%) brightness(1.07);
+    border: 1px solid rgba(255,255,255,0.22);
+    box-shadow: 0 36px 84px rgba(0,0,0,0.42), 0 12px 30px rgba(0,0,0,0.18), inset 0 1px 0 rgba(255,255,255,0.24), inset 0 -1px 0 rgba(0,0,0,0.18), inset 1px 0 0 rgba(255,255,255,0.045);
+    backface-visibility: hidden;
+    transform: translateZ(0);
+    isolation: isolate;
+    contain: layout paint style;
+}
+.mi-panel-surface::before {
     content: '';
     position: absolute;
     inset: 0;
     z-index: 5;
     border-radius: inherit;
-    box-shadow: inset 0 1px 0 rgba(255,255,255,0.11), inset 0 -1px 0 rgba(255,255,255,0.025);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.20), inset 1px 0 0 rgba(255,255,255,0.045), inset -1px 0 0 rgba(0,0,0,0.08), inset 0 -1px 0 rgba(255,255,255,0.035);
     pointer-events: none;
-}
-#mi-p::after {
-    content: '';
-    position: absolute;
-    top: -10%;
-    bottom: -10%;
-    left: -38%;
-    width: 32%;
-    z-index: 4;
-    border-radius: 999px;
-    pointer-events: none;
-    opacity: 0;
-    background: linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.04) 18%, rgba(255,255,255,0.26) 50%, rgba(255,255,255,0.04) 82%, transparent 100%);
-    filter: blur(0.25px);
-    transform: translate3d(0,0,0);
 }
 #mi-p.show {
     opacity: 1;
-    transform: translate3d(0, 0, 0) scale(1);
+    transform: none;
     pointer-events: auto;
     visibility: visible;
-    transition: opacity 0.34s var(--mi-ease-fluid), transform 0.52s var(--mi-ease-fluid), visibility 0s linear 0s;
+    transition: none;
 }
-#mi-p.show::after {
-    animation: miPanelGlassReveal 0.74s cubic-bezier(0.22, 1, 0.36, 1) 1 both;
+#mi-p.is-first-paint-warmup {
+    visibility: visible !important;
+    opacity: 0.001 !important;
+    transform: translate3d(0, 0, 0) !important;
+    pointer-events: none !important;
+    will-change: transform, opacity;
+}
+#mi-p.is-first-paint-ready {
+    visibility: visible;
+    pointer-events: none;
+    will-change: transform, opacity;
+}
+#mi-p.is-motion-primed,
+#mi-p.is-motion-active {
+    will-change: transform, opacity;
+}
+#mi-p.is-motion-primed > .mi-panel-surface,
+#mi-p.is-motion-active > .mi-panel-surface {
+    will-change: transform;
+}
+#mi-p.show.is-closing {
+    pointer-events: none;
+}
+#mi-p:not(.show) .mi-view-stack {
+    opacity: 0;
+    transform: translate3d(0, var(--mi-panel-content-shift-y, 8px), 0);
+    transition: none;
+}
+#mi-p:not(.show) .mi-panel-view {
+    transition: none;
 }
 .mi-view-stack {
     position: relative;
+    isolation: isolate;
     height: min(680px, var(--mi-panel-available-height, calc(100vh - 96px)));
     max-height: var(--mi-panel-available-height, calc(100vh - 96px));
-    transition: height 0.4s var(--mi-ease-fluid);
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+    transition:
+        height 0.4s var(--mi-ease-fluid),
+        opacity 0.22s cubic-bezier(0.18, 0.76, 0.2, 1) 0.22s,
+        transform 0.34s cubic-bezier(0.16, 0.82, 0.2, 1) 0.16s;
+}
+#mi-p.is-first-paint-warmup .mi-view-stack {
+    opacity: 1 !important;
+    transform: translate3d(0, 0, 0) !important;
+    transition: none !important;
+}
+#mi-p.show.is-opening .mi-view-stack {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+}
+#mi-p.show.is-closing .mi-view-stack {
+    opacity: 0;
+    transform: translate3d(0, var(--mi-panel-content-shift-y, 8px), 0);
+    transition:
+        height 0.4s var(--mi-ease-fluid),
+        opacity 0.12s cubic-bezier(0.4, 0, 1, 1),
+        transform 0.18s cubic-bezier(0.4, 0, 0.8, 1);
+}
+#mi-p.is-motion-active .mi-view-stack {
+    will-change: opacity, transform;
+}
+.mi-view-stack::before {
+    content: '';
+    position: absolute;
+    inset: 1px;
+    z-index: 0;
+    border-radius: 20px;
+    pointer-events: none;
+    background:
+        radial-gradient(130% 72% at 9% -12%, rgba(255,255,255,0.13), transparent 46%),
+        linear-gradient(112deg, rgba(255,255,255,0.07) 0%, transparent 18%, transparent 68%, rgba(255,255,255,0.035) 100%);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.065), inset 0 -24px 44px rgba(0,0,0,0.045);
 }
 #mi-p[data-view="settings"] .mi-view-stack {
     height: min(476px, var(--mi-panel-available-height, calc(100vh - 96px)));
@@ -5269,6 +6178,7 @@
     opacity: 0;
     pointer-events: none;
     visibility: hidden;
+    z-index: 1;
     transition: opacity 0.16s var(--mi-ease-fluid), transform 0.26s var(--mi-ease-fluid), visibility 0s linear 0.2s;
 }
 #mi-main-view {
@@ -5625,18 +6535,45 @@
     width: calc(100% - 36px);
     max-height: min(520px, 58vh);
     overflow: auto;
-    padding: 8px;
-    border-radius: 18px;
-    background: linear-gradient(180deg, rgba(36,37,42,0.998), rgba(28,29,34,0.998));
-    border: 1px solid rgba(255,255,255,0.105);
-    box-shadow: 0 18px 48px rgba(0, 0, 0, 0.30), 0 8px 18px rgba(0, 0, 0, 0.16);
+    padding: 9px;
+    border-radius: 20px;
+    background:
+        radial-gradient(120% 84% at 10% -14%, rgba(255,255,255,0.19), transparent 48%),
+        radial-gradient(110% 96% at 100% 110%, rgba(var(--mi-bg-rgb),0.14), transparent 58%),
+        linear-gradient(180deg, rgba(40,44,53,0.82), rgba(14,17,23,0.90));
+    backdrop-filter: blur(20px) saturate(160%) brightness(1.065);
+    -webkit-backdrop-filter: blur(20px) saturate(160%) brightness(1.065);
+    border: 1px solid rgba(255,255,255,0.23);
+    box-shadow: 0 26px 64px rgba(0, 0, 0, 0.37), 0 8px 20px rgba(0, 0, 0, 0.14), inset 0 1px 0 rgba(255,255,255,0.24), inset 0 -1px 0 rgba(0,0,0,0.17);
     opacity: 0;
     transform: translateY(-8px) scale(0.985);
     pointer-events: none;
     visibility: hidden;
     z-index: 100;
-    transition: opacity 0.2s var(--mi-ease-fluid), transform 0.22s var(--mi-ease-fluid), visibility 0s linear 0.22s;
+    isolation: isolate;
+    contain: layout paint style;
+    transition: opacity 0.20s var(--mi-ease-fluid), transform 0.34s var(--mi-ease-liquid), visibility 0s linear 0.34s;
 }
+#mi-drop::before,
+#mi-drop::after {
+    content: '';
+    position: absolute;
+    z-index: 0;
+    pointer-events: none;
+    border-radius: inherit;
+}
+#mi-drop::before {
+    inset: 0;
+    background:
+        linear-gradient(108deg, rgba(255,255,255,0.08), transparent 24%, transparent 72%, rgba(255,255,255,0.035)),
+        radial-gradient(90% 64% at 50% 0%, rgba(255,255,255,0.06), transparent 72%);
+}
+#mi-drop::after {
+    inset: 1px;
+    border: 1px solid rgba(255,255,255,0.035);
+    box-shadow: inset 0 -20px 32px rgba(0,0,0,0.055);
+}
+#mi-drop > * { position: relative; z-index: 1; }
 #mi-drop[data-placement="above"] { transform: translateY(8px) scale(0.985); }
 #mi-drop[data-placement="overlay"] { transform: scale(0.985); }
 #mi-drop.show {
@@ -5644,7 +6581,7 @@
     transform: translateY(0) scale(1);
     pointer-events: auto;
     visibility: visible;
-    transition: opacity 0.24s var(--mi-ease-fluid), transform 0.26s var(--mi-ease-fluid), visibility 0s linear 0s;
+    transition: opacity 0.24s var(--mi-ease-fluid), transform 0.46s var(--mi-ease-liquid), visibility 0s linear 0s;
 }
 #mi-drop[data-compact="true"] {
     padding: 6px;
@@ -5694,7 +6631,8 @@
 }
 .mi-menu-options {
     display: grid;
-    gap: 8px;
+    gap: 7px;
+    padding: 1px 1px 5px;
 }
 .mi-menu-search {
     position: sticky;
@@ -5702,18 +6640,20 @@
     z-index: 3;
     display: grid;
     gap: 8px;
-    margin: 0 0 10px;
+    margin: 0 0 11px;
     padding: 11px;
     border-radius: 16px;
     background:
-        radial-gradient(circle at 18% 0%, rgba(var(--mi-bg-rgb), 0.13), transparent 42%),
-        linear-gradient(180deg, rgba(48,50,57,0.985), rgba(37,39,45,0.99));
-    border: 1px solid rgba(255,255,255,0.10);
-    box-shadow: 0 10px 24px rgba(0,0,0,0.18), inset 0 1px 0 rgba(255,255,255,0.08);
+        radial-gradient(120% 118% at 12% -18%, rgba(255,255,255,0.13), transparent 48%),
+        linear-gradient(180deg, rgba(59,64,75,0.54), rgba(31,35,43,0.48));
+    border: 1px solid rgba(255,255,255,0.145);
+    box-shadow: 0 10px 24px rgba(0,0,0,0.14), inset 0 1px 0 rgba(255,255,255,0.15), inset 0 -1px 0 rgba(0,0,0,0.07);
+    backdrop-filter: blur(12px) saturate(130%);
+    -webkit-backdrop-filter: blur(12px) saturate(130%);
 }
 .mi-menu-search:focus-within {
-    border-color: rgba(var(--mi-bg-rgb), 0.58);
-    box-shadow: 0 0 0 1px rgba(var(--mi-bg-rgb), 0.32), 0 14px 30px rgba(0,0,0,0.22);
+    border-color: rgba(var(--mi-bg-rgb), 0.54);
+    box-shadow: 0 0 0 1px rgba(var(--mi-bg-rgb), 0.19), 0 14px 30px rgba(0,0,0,0.18), inset 0 1px 0 rgba(255,255,255,0.16);
 }
 .mi-menu-search-head {
     display: flex;
@@ -5722,7 +6662,7 @@
     gap: 10px;
 }
 .mi-menu-search-title {
-    color: rgba(255,255,255,0.92);
+    color: rgba(255,255,255,0.94);
     font-size: 12px;
     font-weight: 820;
     letter-spacing: -0.01em;
@@ -5748,14 +6688,15 @@
     min-height: 42px;
     padding: 0 7px 0 6px;
     border-radius: 12px;
-    background: rgba(8, 10, 14, 0.38);
-    border: 1px solid rgba(255,255,255,0.09);
+    background: rgba(7, 9, 13, 0.23);
+    border: 1px solid rgba(255,255,255,0.12);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.045), inset 0 -1px 0 rgba(0,0,0,0.10);
     transition: border-color 0.18s var(--mi-ease), background 0.18s var(--mi-ease), box-shadow 0.18s var(--mi-ease);
 }
 .mi-menu-search:focus-within .mi-menu-search-box {
-    background: rgba(8, 10, 14, 0.52);
-    border-color: rgba(var(--mi-bg-rgb), 0.48);
-    box-shadow: inset 0 0 0 1px rgba(var(--mi-bg-rgb), 0.14);
+    background: rgba(7, 9, 13, 0.34);
+    border-color: rgba(var(--mi-bg-rgb), 0.52);
+    box-shadow: inset 0 0 0 1px rgba(var(--mi-bg-rgb), 0.13), 0 0 0 3px rgba(var(--mi-bg-rgb),0.055);
 }
 .mi-menu-search-icon {
     width: 26px;
@@ -5764,11 +6705,18 @@
     align-items: center;
     justify-content: center;
     border-radius: 9px;
-    background: rgba(var(--mi-bg-rgb), 0.18);
-    color: rgba(255,255,255,0.86);
-    font-size: 15px;
-    font-weight: 900;
-    font-family: var(--mi-font-mono);
+    background: linear-gradient(145deg, rgba(255,255,255,0.16), rgba(var(--mi-bg-rgb),0.13));
+    border: 1px solid rgba(255,255,255,0.10);
+    color: rgba(255,255,255,0.90);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.14);
+}
+.mi-menu-search-icon svg {
+    width: 15px;
+    height: 15px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+    stroke-linecap: round;
 }
 #mi-menu-search {
     width: 100%;
@@ -5803,10 +6751,7 @@
     transform: scale(1);
     pointer-events: auto;
 }
-.mi-menu-search-clear:hover {
-    background: rgba(255,255,255,0.13);
-    color: rgba(255,255,255,0.9);
-}
+.mi-menu-search-clear:hover { background: rgba(255,255,255,0.15); color: rgba(255,255,255,0.94); }
 .mi-menu-search-hint {
     color: rgba(235,235,245,0.50);
     font-size: 11px;
@@ -5825,8 +6770,8 @@
     padding: 0 5px;
     border-radius: 6px;
     color: rgba(255,255,255,0.88);
-    background: rgba(var(--mi-bg-rgb), 0.20);
-    border: 1px solid rgba(var(--mi-bg-rgb), 0.22);
+    background: rgba(255,255,255,0.085);
+    border: 1px solid rgba(255,255,255,0.12);
     font: 800 11px/1 var(--mi-font-mono);
 }
 .mi-menu-empty {
@@ -5889,14 +6834,60 @@
 .mi-opt.active::before {
     opacity: 1;
 }
+.mi-custom-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 38px;
+    gap: 5px;
+    align-items: stretch;
+    min-width: 0;
+}
+.mi-custom-row .mi-opt {
+    width: 100%;
+    min-width: 0;
+}
+.mi-custom-remove {
+    width: 38px;
+    min-width: 38px;
+    min-height: 40px;
+    display: grid;
+    place-items: center;
+    border-radius: 12px;
+    color: rgba(235,235,245,0.46);
+    background: linear-gradient(180deg, rgba(255,255,255,0.052), rgba(255,255,255,0.018));
+    border: 1px solid rgba(255,255,255,0.065);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.055);
+    cursor: pointer;
+    transition: color 0.18s var(--mi-ease), background 0.18s var(--mi-ease), border-color 0.18s var(--mi-ease), transform 0.16s var(--mi-ease-fluid);
+}
+.mi-custom-remove svg {
+    width: 15px;
+    height: 15px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.7;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    pointer-events: none;
+}
+.mi-custom-remove:hover {
+    color: #ff8d87;
+    background: linear-gradient(180deg, rgba(255,105,97,0.16), rgba(255,69,58,0.07));
+    border-color: rgba(255,105,97,0.24);
+    transform: translateY(-0.5px);
+}
+.mi-custom-remove:active { transform: scale(0.94); }
+.mi-custom-remove:focus-visible {
+    outline: 2px solid color-mix(in srgb, #ff6961 70%, #ffffff);
+    outline-offset: 1px;
+}
 .mi-opt.official {
-    border-color: rgba(255, 214, 10, 0.16);
-    background: linear-gradient(135deg, rgba(255, 214, 10, 0.035) 0%, rgba(255, 159, 10, 0.014) 100%);
-    box-shadow: inset 0 0 0 1px rgba(255, 214, 10, 0.035);
+    border-color: rgba(255,255,255,0.075);
+    background: rgba(255,255,255,0.016);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.025);
 }
 .mi-opt.official:hover {
-    border-color: rgba(255, 214, 10, 0.34);
-    box-shadow: 0 8px 18px rgba(255, 214, 10, 0.055), inset 0 0 0 1px rgba(255, 214, 10, 0.08);
+    border-color: rgba(255,255,255,0.16);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.08);
 }
 .mi-opt.mi-agent-opt {
     border-color: rgba(var(--mi-bg-rgb), 0.34);
@@ -5912,7 +6903,44 @@
     overflow: hidden;
     text-overflow: ellipsis;
     display: block;
-    font-weight: 600;
+    font-weight: 700;
+    letter-spacing: -0.012em;
+}
+.mi-opt-title-row {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    min-width: 0;
+}
+.mi-opt-title-row .txt {
+    min-width: 0;
+    flex: 0 1 auto;
+}
+.mi-source-state {
+    display: inline-flex;
+    flex: none;
+    align-items: center;
+    gap: 5px;
+    min-height: 20px;
+    padding: 0 7px 0 6px;
+    border: 1px solid rgba(161, 255, 207, 0.27);
+    border-radius: 999px;
+    color: rgba(211, 255, 229, 0.98);
+    background:
+        linear-gradient(180deg, rgba(255,255,255,0.17), rgba(255,255,255,0.035)),
+        rgba(52, 211, 153, 0.12);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.17), inset 0 -1px 0 rgba(0,0,0,0.14);
+    font: 760 10px/1 var(--mi-font);
+    letter-spacing: 0.025em;
+    white-space: nowrap;
+}
+.mi-source-dot {
+    width: 6px;
+    height: 6px;
+    flex: none;
+    border-radius: 50%;
+    background: #79efb1;
+    box-shadow: 0 0 0 1px rgba(106, 244, 171, 0.12), inset 0 1px 1px rgba(255,255,255,0.62);
 }
 .mi-opt .sub {
     white-space: nowrap;
@@ -5999,9 +7027,11 @@
     box-shadow: 0 8px 18px rgba(0,0,0,0.15), inset 0 1px 0 rgba(255,255,255,0.1), 0 0 0 1px rgba(var(--mi-bg-rgb),0.06);
 }
 .mi-opt.official.active {
-    background: linear-gradient(135deg, rgba(255, 214, 10, 0.085) 0%, rgba(255, 159, 10, 0.035) 100%);
-    border-color: rgba(255, 214, 10, 0.38);
-    box-shadow: 0 0 0 1px rgba(255, 214, 10, 0.08), 0 8px 18px rgba(0,0,0,0.16), inset 0 1px 0 rgba(255,255,255,0.075);
+    background:
+        linear-gradient(180deg, rgba(255,255,255,0.10), rgba(255,255,255,0.03)),
+        rgba(var(--mi-bg-rgb),0.12);
+    border-color: rgba(var(--mi-bg-rgb),0.42);
+    box-shadow: 0 8px 18px rgba(0,0,0,0.15), inset 0 1px 0 rgba(255,255,255,0.18), inset 0 -1px 0 rgba(0,0,0,0.15);
 }
 .mi-opt.mi-agent-opt.active {
     background: linear-gradient(135deg, rgba(var(--mi-bg-rgb), 0.16) 0%, rgba(var(--mi-bg-rgb), 0.075) 100%);
@@ -6341,21 +7371,24 @@
 }
 .mi-effort-track {
     --mi-effort-index: 0;
+    --mi-effort-glass-x: 12.5%;
     position: relative;
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 0;
-    min-height: 52px;
+    min-height: 56px;
     padding: 4px;
     overflow: hidden;
     isolation: isolate;
+    contain: layout paint;
     border-radius: 16px;
     background:
-        radial-gradient(100% 150% at 0% 0%, rgba(255,255,255,0.052), transparent 48%),
-        linear-gradient(180deg, rgba(255,255,255,0.035), rgba(255,255,255,0.022)),
-        rgba(8,10,14,0.22);
-    border: 1px solid rgba(255,255,255,0.078);
-    box-shadow: inset 0 1px 0 rgba(255,255,255,0.045), inset 0 -1px 0 rgba(0,0,0,0.24), 0 8px 20px rgba(0,0,0,0.08);
+        radial-gradient(54% 168% at var(--mi-effort-glass-x) 48%, rgba(var(--mi-bg-rgb),0.115), transparent 66%),
+        linear-gradient(120deg, rgba(255,255,255,0.070), transparent 37%, rgba(255,255,255,0.024) 74%, rgba(0,0,0,0.10)),
+        linear-gradient(180deg, rgba(255,255,255,0.038), rgba(0,0,0,0.075)),
+        rgba(8,11,16,0.34);
+    border: 1px solid rgba(255,255,255,0.118);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.095), inset 0 -1px 0 rgba(0,0,0,0.29), 0 10px 24px rgba(0,0,0,0.11);
     transition: opacity 0.2s var(--mi-ease), border-color 0.2s var(--mi-ease);
 }
 .mi-effort-track::before {
@@ -6365,11 +7398,23 @@
     z-index: 0;
     pointer-events: none;
     border-radius: inherit;
-    background: linear-gradient(180deg, rgba(255,255,255,0.035), transparent 42%);
+    background:
+        linear-gradient(180deg, rgba(255,255,255,0.075), transparent 34%),
+        linear-gradient(90deg, rgba(255,255,255,0.028), transparent 24%, transparent 76%, rgba(255,255,255,0.018));
+}
+.mi-effort-track::after {
+    content: '';
+    position: absolute;
+    inset: 1px;
+    z-index: 0;
+    pointer-events: none;
+    border-radius: 15px;
+    background: radial-gradient(92% 64% at 50% 112%, rgba(0,0,0,0.13), transparent 70%);
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,0.028);
 }
 .mi-effort-track.is-disabled {
-    opacity: 0.58;
-    border-color: rgba(255,255,255,0.055);
+    opacity: 0.62;
+    border-color: rgba(255,255,255,0.065);
 }
 .mi-effort-lens {
     position: absolute;
@@ -6380,7 +7425,8 @@
     width: calc((100% - 8px) / 4);
     pointer-events: none;
     transform: translate3d(calc(var(--mi-effort-index) * 100%), 0, 0);
-    transition: transform 0.32s cubic-bezier(0.22, 1, 0.36, 1);
+    will-change: transform;
+    transition: transform 0.42s var(--mi-ease-liquid);
 }
 .mi-effort-lens-material {
     display: block;
@@ -6388,33 +7434,56 @@
     width: 100%;
     height: 100%;
     border-radius: 12px;
+    overflow: hidden;
+    isolation: isolate;
     background:
-        radial-gradient(125% 160% at 16% -8%, rgba(255,255,255,0.25), transparent 40%),
-        linear-gradient(180deg, rgba(255,255,255,0.105), rgba(255,255,255,0.036)),
-        rgba(var(--mi-bg-rgb),0.105);
-    border: 1px solid rgba(255,255,255,0.17);
-    box-shadow: 0 8px 20px rgba(0,0,0,0.24), inset 0 1px 0 rgba(255,255,255,0.28), inset 0 -1px 0 rgba(0,0,0,0.23), 0 0 0 1px rgba(var(--mi-bg-rgb),0.075);
-    backdrop-filter: blur(10px) saturate(148%) brightness(1.055);
-    -webkit-backdrop-filter: blur(10px) saturate(148%) brightness(1.055);
-    transition: transform 0.12s var(--mi-ease), box-shadow 0.2s var(--mi-ease);
+        radial-gradient(118% 92% at 18% -18%, rgba(255,255,255,0.34) 0%, rgba(255,255,255,0.105) 30%, transparent 49%),
+        linear-gradient(180deg, rgba(255,255,255,0.082), rgba(255,255,255,0.018) 52%, rgba(0,0,0,0.038)),
+        rgba(255,255,255,0.026);
+    border: 1px solid rgba(255,255,255,0.28);
+    box-shadow:
+        0 7px 18px rgba(0,0,0,0.20),
+        inset 0 1px 0 rgba(255,255,255,0.34),
+        inset 0 -1px 0 rgba(0,0,0,0.24),
+        inset 1px 0 0 rgba(255,255,255,0.10),
+        inset -1px 0 0 rgba(0,0,0,0.12);
+    backdrop-filter: blur(14px) saturate(152%) brightness(1.07);
+    -webkit-backdrop-filter: blur(14px) saturate(152%) brightness(1.07);
+    transition: transform 0.12s var(--mi-ease), box-shadow 0.16s var(--mi-ease);
 }
 .mi-effort-lens-material::before {
     content: '';
     position: absolute;
     inset: 1px;
     border-radius: 11px;
-    background: linear-gradient(120deg, rgba(255,255,255,0.12), transparent 28%, transparent 72%, rgba(255,255,255,0.025));
-    box-shadow: inset 1px 0 0 rgba(255,255,255,0.08), inset -1px 0 0 rgba(0,0,0,0.08);
+    z-index: 0;
+    background:
+        linear-gradient(110deg, rgba(255,255,255,0.36) 0%, rgba(255,255,255,0.105) 12%, transparent 29%, transparent 74%, rgba(255,255,255,0.055) 100%),
+        radial-gradient(100% 86% at 54% -24%, rgba(255,255,255,0.17), transparent 54%);
+    box-shadow: inset 1px 0 0 rgba(255,255,255,0.15), inset -1px 0 0 rgba(0,0,0,0.10), inset 0 1px 0 rgba(255,255,255,0.10);
 }
+.mi-effort-lens-material::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    pointer-events: none;
+    border-radius: inherit;
+    background:
+        linear-gradient(90deg, rgba(255,255,255,0.14), transparent 17%, transparent 83%, rgba(255,255,255,0.10)),
+        linear-gradient(180deg, transparent 55%, rgba(0,0,0,0.10));
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,0.075);
+}
+.mi-grid.is-pressing .mi-effort-lens-material,
 .mi-effort-track:has(.mi-g-item:active) .mi-effort-lens-material {
-    transform: scaleX(1.025) scaleY(0.94);
-    box-shadow: 0 5px 14px rgba(0,0,0,0.22), inset 0 1px 0 rgba(255,255,255,0.25), inset 0 -1px 0 rgba(0,0,0,0.24);
+    transform: scaleX(1.018) scaleY(0.964);
+    box-shadow: 0 4px 13px rgba(0,0,0,0.20), inset 0 1px 0 rgba(255,255,255,0.27), inset 0 -1px 0 rgba(0,0,0,0.25);
 }
 .mi-g-item {
     position: relative;
     z-index: 2;
     min-width: 0;
-    min-height: 44px;
+    min-height: 48px;
     display: grid;
     place-items: center;
     padding: 8px 4px;
@@ -6424,13 +7493,14 @@
     text-align: center;
     cursor: pointer;
     transition: color 0.16s var(--mi-ease), opacity 0.18s var(--mi-ease), transform 0.1s var(--mi-ease);
-    color: rgba(235,235,245,0.58);
+    color: rgba(235,235,245,0.62);
 }
 .mi-g-item.active {
     background: transparent;
     border-color: transparent;
     color: #ffffff;
-    text-shadow: 0 1px 6px rgba(0,0,0,0.38);
+    font-weight: 720;
+    text-shadow: 0 1px 7px rgba(0,0,0,0.40);
     box-shadow: none;
 }
 .mi-g-item:focus-visible {
@@ -6445,7 +7515,7 @@
     width: 100%;
     font-size: 12px;
     line-height: 1.15;
-    font-weight: 650;
+    font-weight: 680;
     letter-spacing: -0.01em;
     color: inherit;
     white-space: nowrap;
@@ -6456,7 +7526,7 @@
 .mi-effort-detail {
     min-height: 16px;
     margin: 8px 5px 0;
-    color: rgba(235,235,245,0.55);
+    color: rgba(235,235,245,0.64);
     font-size: 11.5px;
     line-height: 1.35;
     text-align: center;
@@ -6928,12 +7998,6 @@
     72% { opacity: 0.16; }
     100% { transform: translate3d(480%,0,0); opacity: 0; }
 }
-@keyframes miPanelGlassReveal {
-    0% { transform: translate3d(-120%,0,0); opacity: 0; }
-    18% { opacity: 0.46; }
-    56% { opacity: 0.16; }
-    100% { transform: translate3d(420%,0,0); opacity: 0; }
-}
 @media (hover: hover) and (pointer: fine) {
     #mi-b:not(.panel-open):hover::before {
         opacity: 0.82;
@@ -6948,8 +8012,6 @@
         transform: scale(1.035);
         filter: drop-shadow(0 4px 8px rgba(0,0,0,0.28));
     }
-    #mi-b:not(.panel-open):hover .mi-brand-orbit-group { transform: rotate(8deg); }
-    #mi-b:not(.panel-open):hover .mi-brand-core { transform: rotate(-6deg); }
     .mi-g-item:hover:not(:disabled) {
         color: rgba(255,255,255,0.88);
         transform: translateY(-0.5px);
@@ -6962,19 +8024,58 @@
     }
 }
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
-    #mi-p { background: rgb(24, 25, 30); }
+    .mi-panel-surface,
+    #mi-drop { background: rgb(24, 25, 30); }
+    #mi-backdrop {
+        background: rgba(7, 9, 13, 0.58);
+        backdrop-filter: none;
+        -webkit-backdrop-filter: none;
+    }
 }
 @supports ((backdrop-filter: url(#mi-model-injector-liquid-lens)) or (-webkit-backdrop-filter: url(#mi-model-injector-liquid-lens))) {
+    .mi-panel-surface {
+        backdrop-filter: blur(18px) url(#mi-model-injector-liquid-lens) saturate(162%) brightness(1.07);
+        -webkit-backdrop-filter: blur(18px) url(#mi-model-injector-liquid-lens) saturate(162%) brightness(1.07);
+    }
+    #mi-drop {
+        backdrop-filter: blur(20px) url(#mi-model-injector-liquid-lens) saturate(160%) brightness(1.065);
+        -webkit-backdrop-filter: blur(20px) url(#mi-model-injector-liquid-lens) saturate(160%) brightness(1.065);
+    }
     .mi-effort-lens-material {
         backdrop-filter: url(#mi-model-injector-liquid-lens) blur(10px) saturate(148%) brightness(1.055);
         -webkit-backdrop-filter: url(#mi-model-injector-liquid-lens) blur(10px) saturate(148%) brightness(1.055);
     }
+    #mi-p.is-motion-primed > .mi-panel-surface,
+    #mi-p.is-motion-active > .mi-panel-surface {
+        backdrop-filter: blur(12px) saturate(152%) brightness(1.06);
+        -webkit-backdrop-filter: blur(12px) saturate(152%) brightness(1.06);
+    }
+    #mi-p.is-motion-primed .mi-effort-lens-material,
+    #mi-p.is-motion-active .mi-effort-lens-material {
+        background:
+            radial-gradient(118% 92% at 18% -18%, rgba(255,255,255,0.30) 0%, rgba(255,255,255,0.10) 30%, transparent 49%),
+            linear-gradient(180deg, rgba(255,255,255,0.10), rgba(255,255,255,0.035) 52%, rgba(0,0,0,0.05)),
+            rgba(48,52,61,0.70);
+        backdrop-filter: none;
+        -webkit-backdrop-filter: none;
+    }
 }
 @media (prefers-reduced-transparency: reduce) {
-    #mi-p {
+    .mi-panel-surface,
+    #mi-drop {
         background: rgb(24, 25, 30);
         backdrop-filter: none;
         -webkit-backdrop-filter: none;
+    }
+    #mi-backdrop {
+        background: rgba(7, 9, 13, 0.54);
+        backdrop-filter: none;
+        -webkit-backdrop-filter: none;
+    }
+    .mi-view-stack::before { display: none; }
+    .mi-source-state {
+        background: rgba(23, 27, 29, 0.96);
+        border-color: rgba(160, 255, 202, 0.44);
     }
     .mi-effort-lens-material {
         background: linear-gradient(180deg, rgba(82,86,96,0.98), rgba(48,51,59,0.98));
@@ -6992,7 +8093,7 @@
     }
 }
 @media (forced-colors: active) {
-    #mi-p,
+    .mi-panel-surface,
     #mi-b,
     #mi-drop,
     .mi-tooltip {
@@ -7023,6 +8124,19 @@
     }
     .mi-sw.on { background: Highlight; }
     .mi-sw.on::after { background: HighlightText; }
+    .mi-source-state {
+        color: ButtonText;
+        background: Canvas;
+        border-color: ButtonBorder;
+        box-shadow: none;
+    }
+    .mi-custom-remove {
+        color: ButtonText;
+        background: Canvas;
+        border-color: ButtonBorder;
+        box-shadow: none;
+    }
+    .mi-source-dot { background: Highlight; }
 }
 </style>
 <svg class="mi-glass-defs" width="0" height="0" aria-hidden="true" focusable="false">
@@ -7030,7 +8144,7 @@
         <filter id="mi-model-injector-liquid-lens" x="-18%" y="-28%" width="136%" height="156%" color-interpolation-filters="sRGB">
             <feTurbulence type="fractalNoise" baseFrequency="0.012 0.085" numOctaves="1" seed="19" result="mi-lens-noise"></feTurbulence>
             <feGaussianBlur in="mi-lens-noise" stdDeviation="0.42" result="mi-lens-soft-noise"></feGaussianBlur>
-            <feDisplacementMap in="SourceGraphic" in2="mi-lens-soft-noise" scale="1.45" xChannelSelector="R" yChannelSelector="G"></feDisplacementMap>
+            <feDisplacementMap in="SourceGraphic" in2="mi-lens-soft-noise" scale="2.25" xChannelSelector="R" yChannelSelector="G"></feDisplacementMap>
         </filter>
     </defs>
 </svg>
@@ -7050,6 +8164,8 @@
         </g>
         <g class="mi-brand-core">
             <path class="mi-brand-lens" d="M32 21.7C39.2 26.5 39.2 37.5 32 42.3C24.8 37.5 24.8 26.5 32 21.7Z"></path>
+        </g>
+        <g class="mi-brand-center">
             <circle class="mi-brand-pupil" cx="32" cy="32" r="3.1"></circle>
             <circle class="mi-brand-glint" cx="30.9" cy="30.9" r="0.85"></circle>
         </g>
@@ -7057,7 +8173,8 @@
     <div id="mi-n">0</div>
     <div id="mi-model-label">Default model</div>
 </button>
-<div id="mi-p" role="dialog" aria-modal="true" aria-labelledby="mi-panel-title" aria-hidden="true" tabindex="-1" data-view="main">
+<div id="mi-p" role="dialog" aria-modal="true" aria-labelledby="mi-panel-title" aria-hidden="true" tabindex="-1" data-view="main" inert>
+    <div class="mi-panel-surface">
     <div class="mi-view-stack">
     <section id="mi-main-view" class="mi-panel-view" aria-hidden="false">
     <div class="mi-head">
@@ -7177,6 +8294,7 @@
     </div>
 </section>
     </div>
+    </div>
     <div id="mi-lang-menu" class="mi-lang-menu" role="listbox" aria-hidden="true" inert></div>
     <div id="mi-drop" aria-hidden="true" tabindex="-1"></div>
 </div>
@@ -7205,7 +8323,11 @@
         scheduleWorkspaceAgentScan(300);
 
         if (isSupportedHost() && !S.api.length) window.setTimeout(fetchModels, LOAD_DELAY);
-        requestAnimationFrame(clampPosition);
+        requestAnimationFrame(() => {
+            clampPosition();
+            schedulePanelMotionPreparation(q('mi-p'));
+            schedulePanelFirstPaintPreparation(q('mi-p'));
+        });
     }
 
     function waitForBody(callback) {
