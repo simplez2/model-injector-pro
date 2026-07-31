@@ -4,7 +4,7 @@
     'use strict';
 
     const PREFIX = 'cgpt_v12_';
-    const SCRIPT_BUILD = '2026-07-31-anchor-morph-frost-v8';
+    const SCRIPT_BUILD = '2026-07-31-continuous-motion-v11';
     const PACKET_LOG_LIMIT = 48;
     const MODELS_ENDPOINT = '/backend-api/models';
     const CES_STATS_ENDPOINT = '/ces/statsc/flush';
@@ -22,8 +22,9 @@
     const PANEL_SETTINGS_HEIGHT = 476;
     const PANEL_MIN_SIDE_HEIGHT = 280;
     const PANEL_MOTION_DURATION = 520;
-    const PANEL_MOTION_CLOSE_RATE = 1.46;
+    const PANEL_MOTION_CLOSE_RATE = 1.12;
     const PANEL_MOTION_PRIME_LEASE = 300;
+    const PANEL_FIRST_PAINT_IDLE_TIMEOUT = 240;
     const BUTTON_RING = 194.78;
     const COLLATOR = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
     const COLORS = ['#007aff', '#2563eb', '#0ea5e9', '#14b8a6', '#10b981', '#f59e0b', '#f97316', '#ef4444', '#ec4899', '#8b5cf6'];
@@ -237,6 +238,7 @@
     let panelFocusFrame = 0;
     let panelFocusTimer = 0;
     let panelMotionAnimation = null;
+    let panelContentMotionAnimation = null;
     let panelMotionAnimationKey = '';
     let panelMotionOpening = null;
     let panelMotionGeneration = 0;
@@ -3509,8 +3511,7 @@
         const generation = ++panelFirstPaintGeneration;
         const backdrop = q('mi-backdrop');
         panelFirstPaintState = 'warming';
-        animation.pause();
-        animation.currentTime = PANEL_MOTION_DURATION;
+        setPanelMotionCurrentTime(PANEL_MOTION_DURATION);
         panel.classList.remove('is-first-paint-ready');
         panel.classList.add('is-first-paint-warmup');
         backdrop?.classList.remove('is-first-paint-ready');
@@ -3522,8 +3523,7 @@
             panel.classList.add('is-motion-primed');
             queuePanelFirstPaintFrames(() => {
                 if (generation !== panelFirstPaintGeneration || panelFirstPaintState !== 'warming') return;
-                animation.pause();
-                animation.currentTime = 0;
+                setPanelMotionCurrentTime(0);
                 panel.classList.remove('is-first-paint-warmup');
                 panel.classList.add('is-first-paint-ready');
                 backdrop?.classList.remove('is-first-paint-warmup');
@@ -3549,7 +3549,7 @@
         };
         if (typeof window.requestIdleCallback === 'function') {
             panelFirstPaintIdleUsesTimeout = false;
-            panelFirstPaintIdleJob = window.requestIdleCallback(run, { timeout: 900 });
+            panelFirstPaintIdleJob = window.requestIdleCallback(run, { timeout: PANEL_FIRST_PAINT_IDLE_TIMEOUT });
         } else {
             panelFirstPaintIdleUsesTimeout = true;
             panelFirstPaintIdleJob = window.setTimeout(run, 180);
@@ -3563,8 +3563,7 @@
         panelFirstPaintGeneration += 1;
         const hadPreparedLayer = panelFirstPaintState === 'ready' || panelFirstPaintState === 'warming';
         if (panelFirstPaintState === 'warming') {
-            panelMotionAnimation?.pause();
-            if (panelMotionAnimation) panelMotionAnimation.currentTime = 0;
+            setPanelMotionCurrentTime(0);
             panel.classList.remove('is-first-paint-warmup');
             panel.classList.add('is-first-paint-ready', 'is-motion-primed');
             q('mi-backdrop')?.classList.remove('is-first-paint-warmup');
@@ -3633,6 +3632,23 @@
         });
     }
 
+    function getPanelMotionProgress(time) {
+        const t = clamp(Number(time) || 0, 0, 1);
+        const t2 = t * t;
+        const t3 = t2 * t;
+        const startVelocity = 2.2;
+        const endVelocity = 0.22;
+        const progress = (-2 * t3 + 3 * t2)
+            + (t3 - 2 * t2 + t) * startVelocity
+            + (t3 - t2) * endVelocity;
+        return clamp(progress, 0, 1);
+    }
+
+    function getPanelMotionElastic(time) {
+        const phase = clamp(((Number(time) || 0) - 0.7) / 0.3, 0, 1);
+        return Math.sin(phase * Math.PI);
+    }
+
     function getPanelMotionKeyframes(geometry = panelMotionGeometry) {
         const clean = value => Math.abs(value) < 0.05 ? 0 : Number(value.toFixed(2));
         const transform = (x, y) => `translate3d(${clean(x)}px, ${clean(y)}px, 0)`;
@@ -3650,7 +3666,6 @@
         const anchorLeftInset = Math.max(0, originX - neckHalfWidth);
         const anchorRightInset = Math.max(0, width - originX - neckHalfWidth);
         const neckHeight = clamp(height * 0.045, 26, 34);
-        const throatHeight = clamp(height * 0.16, 78, 112);
         const clip = (visibleHeight, pinch = 0, radius = 22) => {
             const safeVisibleHeight = clamp(visibleHeight, 0, height);
             const revealProgress = safeVisibleHeight / height;
@@ -3661,51 +3676,27 @@
         };
         const overshootX = shiftX === 0 ? 0 : -Math.sign(shiftX) * 0.7;
         const overshootY = shiftY === 0 ? (revealFromTop ? 1.6 : -1.6) : -Math.sign(shiftY) * 1.7;
-        const settleX = overshootX === 0 ? 0 : -overshootX * 0.34;
-        const settleY = -overshootY * 0.34;
-        return [
-            {
-                offset: 0,
-                opacity: 0.001,
-                transform: transform(shiftX, shiftY),
-                clipPath: clip(neckHeight, 1, 28),
-                easing: 'cubic-bezier(0.2, 0.72, 0.18, 1)'
-            },
-            {
-                offset: 0.12,
-                opacity: 0.78,
-                transform: transform(shiftX * 0.72, shiftY * 0.72),
-                clipPath: clip(throatHeight, 0.76, 27),
-                easing: 'cubic-bezier(0.16, 0.9, 0.18, 1)'
-            },
-            {
-                offset: 0.4,
-                opacity: 1,
-                transform: transform(shiftX * 0.18, shiftY * 0.18),
-                clipPath: clip(height * 0.68, 0.08, 24),
-                easing: 'cubic-bezier(0.16, 0.84, 0.2, 1)'
-            },
-            {
-                offset: 0.68,
-                opacity: 1,
-                transform: transform(overshootX, overshootY),
-                clipPath: clip(height * 0.98, 0.008, 22),
-                easing: 'cubic-bezier(0.22, 0.78, 0.2, 1)'
-            },
-            {
-                offset: 0.84,
-                opacity: 1,
-                transform: transform(settleX, settleY),
-                clipPath: clip(height, 0, 22),
-                easing: 'cubic-bezier(0.24, 0.76, 0.2, 1)'
-            },
-            {
-                offset: 1,
-                opacity: 1,
-                transform: transform(0, 0),
-                clipPath: clip(height, 0, 22)
-            }
-        ];
+        const sampleCount = 17;
+        return Array.from({ length: sampleCount }, (_, index) => {
+            const offset = index / (sampleCount - 1);
+            const progress = getPanelMotionProgress(offset);
+            const inverse = 1 - progress;
+            const elastic = getPanelMotionElastic(offset);
+            const visibleProgress = Math.pow(progress, 1.08);
+            const visibleHeight = neckHeight + ((height - neckHeight) * visibleProgress);
+            const pinch = Math.pow(inverse, 1.35);
+            const radius = 22 + (6 * Math.pow(inverse, 0.82));
+            const opacity = 0.001 + (0.999 * (1 - Math.pow(inverse, 2.6)));
+            return {
+                offset,
+                opacity: Number(opacity.toFixed(4)),
+                transform: transform(
+                    (shiftX * inverse) + (overshootX * elastic),
+                    (shiftY * inverse) + (overshootY * elastic)
+                ),
+                clipPath: clip(visibleHeight, pinch, radius)
+            };
+        });
     }
 
     function getPanelMotionAnimationKey(geometry = panelMotionGeometry) {
@@ -3720,27 +3711,77 @@
         ].join('|');
     }
 
+    function getPanelContentMotionKeyframes(geometry = panelMotionGeometry) {
+        const clean = value => Math.abs(value) < 0.001 ? 0 : Number(value.toFixed(3));
+        const shiftX = Number(geometry?.shiftX) || 0;
+        const shiftY = Number(geometry?.shiftY) || 0;
+        const panel = q('mi-p');
+        const placement = panel?.dataset.placement || 'above';
+        const revealFromTop = placement === 'below' || (placement === 'detached' && shiftY < 0);
+        const overshootX = shiftX === 0 ? 0 : -Math.sign(shiftX) * 0.7;
+        const overshootY = shiftY === 0 ? (revealFromTop ? 1.6 : -1.6) : -Math.sign(shiftY) * 1.7;
+        const transform = (x, y, scaleX, scaleY) => (
+            `translate3d(${clean(x)}px, ${clean(y)}px, 0) scale3d(${clean(scaleX)}, ${clean(scaleY)}, 1)`
+        );
+        const sampleCount = 17;
+        return Array.from({ length: sampleCount }, (_, index) => {
+            const offset = index / (sampleCount - 1);
+            const progress = getPanelMotionProgress(offset);
+            const inverse = 1 - progress;
+            const elastic = getPanelMotionElastic(offset);
+            const opacity = 0.08 + (0.92 * Math.pow(progress, 0.72));
+            return {
+                offset,
+                opacity: Number(opacity.toFixed(4)),
+                transform: transform(
+                    (shiftX * 0.055 * inverse) + (overshootX * 0.16 * elastic),
+                    (shiftY * 0.075 * inverse) + (overshootY * 0.16 * elastic),
+                    0.968 + (0.032 * progress) + (0.001 * elastic),
+                    0.95 + (0.05 * progress) - (0.001 * elastic)
+                )
+            };
+        });
+    }
+
+    function setPanelMotionCurrentTime(currentTime) {
+        for (const animation of [panelMotionAnimation, panelContentMotionAnimation]) {
+            if (!animation) continue;
+            animation.pause();
+            animation.currentTime = currentTime;
+        }
+    }
+
     function preparePanelMotionAnimation(panel, geometry = panelMotionGeometry, initialTime = null) {
         if (!panel || prefersReducedMotion() || typeof panel.animate !== 'function') return null;
         const nextKey = getPanelMotionAnimationKey(geometry);
-        if (panelMotionAnimation && panelMotionAnimationKey === nextKey) return panelMotionAnimation;
+        if (panelMotionAnimation && panelContentMotionAnimation && panelMotionAnimationKey === nextKey) {
+            return panelMotionAnimation;
+        }
 
         if (panelMotionAnimation) {
             panelMotionAnimation.onfinish = null;
             panelMotionAnimation.oncancel = null;
             panelMotionAnimation.cancel();
         }
+        panelContentMotionAnimation?.cancel();
 
         const animation = panel.animate(getPanelMotionKeyframes(geometry), {
             duration: PANEL_MOTION_DURATION,
             easing: 'linear',
             fill: 'both'
         });
-        animation.pause();
-        animation.currentTime = Number.isFinite(initialTime)
+        const content = panel.querySelector('.mi-view-stack');
+        const contentAnimation = content?.animate(getPanelContentMotionKeyframes(geometry), {
+            duration: PANEL_MOTION_DURATION,
+            easing: 'linear',
+            fill: 'both'
+        }) || null;
+        panelMotionAnimation = animation;
+        panelContentMotionAnimation = contentAnimation;
+        const resolvedTime = Number.isFinite(initialTime)
             ? initialTime
             : panel.classList.contains('show') ? PANEL_MOTION_DURATION : 0;
-        panelMotionAnimation = animation;
+        setPanelMotionCurrentTime(resolvedTime);
         panelMotionAnimationKey = nextKey;
         panelMotionOpening = null;
         return animation;
@@ -3749,7 +3790,9 @@
     function clearPanelMotionAnimation(panel = q('mi-p'), finalOpen = false) {
         panelMotionGeneration += 1;
         const animation = panelMotionAnimation;
+        const contentAnimation = panelContentMotionAnimation;
         panelMotionAnimation = null;
+        panelContentMotionAnimation = null;
         panelMotionAnimationKey = '';
         panelMotionOpening = null;
         if (animation) {
@@ -3762,12 +3805,14 @@
         if (finalOpen) panel?.classList.add('show');
         else panel?.classList.remove('show');
         animation?.cancel();
+        contentAnimation?.cancel();
         resumeDeferredUiWork();
     }
 
     function completePanelMotion(panel, opening, generation) {
         if (generation !== panelMotionGeneration || !panel) return;
         const animation = panelMotionAnimation;
+        const contentAnimation = panelContentMotionAnimation;
         panelMotionOpening = null;
         if (animation) animation.onfinish = null;
         releasePanelMotionPrime(panel);
@@ -3777,12 +3822,14 @@
             panel.classList.add('show');
         } else {
             panelMotionAnimation = null;
+            panelContentMotionAnimation = null;
             panelMotionAnimationKey = '';
             panel.classList.remove('show');
             setPanelView('main', false);
             invalidatePanelMotionLayout(panel);
             schedulePanelMotionPreparation(panel);
             animation?.cancel();
+            contentAnimation?.cancel();
         }
         resumeDeferredUiWork();
     }
@@ -3798,7 +3845,7 @@
         const generation = ++panelMotionGeneration;
         const expectedKey = getPanelMotionAnimationKey(geometry);
         let animation = panelMotionAnimation;
-        if (!animation || panelMotionAnimationKey !== expectedKey) {
+        if (!animation || !panelContentMotionAnimation || panelMotionAnimationKey !== expectedKey) {
             animation = preparePanelMotionAnimation(panel, geometry, opening ? 0 : PANEL_MOTION_DURATION);
         }
         if (!animation) return false;
@@ -3813,6 +3860,14 @@
         const playbackRate = opening ? 1 : -PANEL_MOTION_CLOSE_RATE;
         if (typeof animation.updatePlaybackRate === 'function') animation.updatePlaybackRate(playbackRate);
         else animation.playbackRate = playbackRate;
+        if (panelContentMotionAnimation) {
+            if (typeof panelContentMotionAnimation.updatePlaybackRate === 'function') {
+                panelContentMotionAnimation.updatePlaybackRate(playbackRate);
+            } else {
+                panelContentMotionAnimation.playbackRate = playbackRate;
+            }
+            panelContentMotionAnimation.play();
+        }
         animation.play();
         return true;
     }
@@ -5811,7 +5866,7 @@
     z-index: 1;
     backface-visibility: hidden;
     transform: translateZ(0);
-    transition: opacity 0.36s cubic-bezier(0.3, 0, 0.3, 1), visibility 0s linear 0.36s;
+    transition: opacity 0.44s cubic-bezier(0.3, 0, 0.3, 1), visibility 0s linear 0.44s;
 }
 #mi-backdrop.show {
     opacity: 1;
@@ -6130,10 +6185,8 @@
     max-height: var(--mi-panel-available-height, calc(100vh - 96px));
     opacity: 1;
     transform: translate3d(0, 0, 0);
-    transition:
-        height 0.4s var(--mi-ease-fluid),
-        opacity 0.22s cubic-bezier(0.18, 0.76, 0.2, 1) 0.22s,
-        transform 0.34s cubic-bezier(0.16, 0.82, 0.2, 1) 0.16s;
+    transform-origin: var(--mi-panel-anchor-x, calc(100% - 28px)) var(--mi-panel-anchor-y, calc(100% - 28px));
+    transition: height 0.4s var(--mi-ease-fluid);
 }
 #mi-p.is-first-paint-warmup .mi-view-stack {
     opacity: 1 !important;
@@ -6145,12 +6198,8 @@
     transform: translate3d(0, 0, 0);
 }
 #mi-p.show.is-closing .mi-view-stack {
-    opacity: 0;
-    transform: translate3d(0, var(--mi-panel-content-shift-y, 8px), 0);
-    transition:
-        height 0.4s var(--mi-ease-fluid),
-        opacity 0.12s cubic-bezier(0.4, 0, 1, 1),
-        transform 0.18s cubic-bezier(0.4, 0, 0.8, 1);
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
 }
 #mi-p.is-motion-active .mi-view-stack {
     will-change: opacity, transform;
