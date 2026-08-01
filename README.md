@@ -111,6 +111,20 @@ npm run verify
 
 涉及运行文件的 PR 必须同步更新相应文档、版本或第三方归属。不要提交浏览器资料目录、账号导出、私钥、访问令牌、抓包文件、个人路径或本地备份。
 
+## 致谢
+
+感谢 [Linux.do](https://linux.do) 社区提供的技术交流、问题反馈和开源讨论。
+
 ## 许可证
 
 项目代码以 [MIT License](LICENSE) 发布。随包 tokenizer 的独立版权和许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
+## 版权标识
+
+当前项目使用的版权通知为：
+
+```text
+Copyright © 2026 simplez2
+```
+
+版权通知是权利人对作品归属的明确标识，不是需要先向 GitHub 或其他平台“领取”的认证。若实际权利人是个人、公司或组织，应将上面的主体名称，以及 `LICENSE` 中的对应版权行，替换为真实权利人；不要把 OpenAI 或 ChatGPT 写成该项目的权利人。开源并不会自动放弃版权，MIT License 只是向他人授予使用、修改和再分发代码的许可，同时要求保留版权和许可证明。
