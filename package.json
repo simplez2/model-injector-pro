@@ -1,19 +1,29 @@
 {
-  "name": "chatgpt-model-injector-pro",
-  "version": "1.0.0",
+  "name": "model-injector-pro",
+  "version": "1.3.2",
   "private": true,
-  "description": "Manifest V3 browser extension for local ChatGPT model parameter controls and context-token estimation.",
+  "description": "Independent Manifest V3 controls and diagnostics for supported ChatGPT web sessions.",
   "type": "commonjs",
   "scripts": {
     "verify": "node --check extension/content.js && node --check extension/config.js && node --check extension/libs/o200k_base.js && python scripts/verify_extension.py",
     "package": "python scripts/package_extension.py"
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/simplez2/model-injector-pro.git"
+  },
+  "bugs": {
+    "url": "https://github.com/simplez2/model-injector-pro/issues"
+  },
+  "homepage": "https://github.com/simplez2/model-injector-pro#readme",
   "keywords": [
     "browser-extension",
     "manifest-v3",
-    "chatgpt",
-    "model-switcher",
+    "model-controls",
     "token-counter"
   ],
-  "license": "UNLICENSED"
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT"
 }

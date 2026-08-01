@@ -1,22 +1,50 @@
 Add-Type -AssemblyName System.Drawing
 
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+
 function New-PointF([float] $x, [float] $y) {
-    return [System.Drawing.PointF]::new($x, $y)
+    [System.Drawing.PointF]::new($x, $y)
 }
 
-function New-RoundedRectPath([float] $x, [float] $y, [float] $w, [float] $h, [float] $r) {
+function New-RoundedRectPath([float] $x, [float] $y, [float] $width, [float] $height, [float] $radius) {
     $path = [System.Drawing.Drawing2D.GraphicsPath]::new()
-    $d = $r * 2
-    $path.AddArc($x, $y, $d, $d, 180, 90)
-    $path.AddArc($x + $w - $d, $y, $d, $d, 270, 90)
-    $path.AddArc($x + $w - $d, $y + $h - $d, $d, $d, 0, 90)
-    $path.AddArc($x, $y + $h - $d, $d, $d, 90, 90)
+    $diameter = $radius * 2
+    $path.AddArc($x, $y, $diameter, $diameter, 180, 90)
+    $path.AddArc($x + $width - $diameter, $y, $diameter, $diameter, 270, 90)
+    $path.AddArc($x + $width - $diameter, $y + $height - $diameter, $diameter, $diameter, 0, 90)
+    $path.AddArc($x, $y + $height - $diameter, $diameter, $diameter, 90, 90)
     $path.CloseFigure()
-    return $path
+    $path
 }
 
-function Draw-BrandIcon([int] $size, [string] $outputPath) {
-    $bitmap = [System.Drawing.Bitmap]::new($size, $size)
+function New-LensPath([float] $unit, [float] $offsetY = 0) {
+    $path = [System.Drawing.Drawing2D.GraphicsPath]::new()
+    $path.StartFigure()
+    $path.AddBezier(
+        (New-PointF (128 * $unit) ((89 + $offsetY) * $unit)),
+        (New-PointF (154 * $unit) ((105.4 + $offsetY) * $unit)),
+        (New-PointF (154 * $unit) ((150.6 + $offsetY) * $unit)),
+        (New-PointF (128 * $unit) ((167 + $offsetY) * $unit))
+    )
+    $path.AddBezier(
+        (New-PointF (128 * $unit) ((167 + $offsetY) * $unit)),
+        (New-PointF (102 * $unit) ((150.6 + $offsetY) * $unit)),
+        (New-PointF (102 * $unit) ((105.4 + $offsetY) * $unit)),
+        (New-PointF (128 * $unit) ((89 + $offsetY) * $unit))
+    )
+    $path.CloseFigure()
+    $path
+}
+
+function Draw-OrbitalLensIcon([int] $size, [string] $outputPath) {
+    # Render at 4x, then downsample. This keeps the open orbit and central pupil
+    # legible at 16 px without adding small-size-only geometry.
+    $renderScale = 4
+    $canvas = $size * $renderScale
+    $unit = $canvas / 256.0
+
+    $bitmap = [System.Drawing.Bitmap]::new($canvas, $canvas, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
     $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
     $graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
     $graphics.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
@@ -24,101 +52,101 @@ function Draw-BrandIcon([int] $size, [string] $outputPath) {
     $graphics.CompositingQuality = [System.Drawing.Drawing2D.CompositingQuality]::HighQuality
     $graphics.Clear([System.Drawing.Color]::Transparent)
 
-    $pad = $size * 0.0625
-    $cardSize = $size - ($pad * 2)
-    $radius = $size * 0.21875
-
-    $cardPath = New-RoundedRectPath $pad $pad $cardSize $cardSize $radius
-    $bgBrush = [System.Drawing.Drawing2D.LinearGradientBrush]::new(
-        (New-PointF ($size * 0.12) ($size * 0.08)),
-        (New-PointF ($size * 0.88) ($size * 0.92)),
-        [System.Drawing.Color]::FromArgb(255, 6, 21, 34),
-        [System.Drawing.Color]::FromArgb(255, 11, 111, 203)
-    )
+    $cardPath = New-RoundedRectPath (16 * $unit) (16 * $unit) (224 * $unit) (224 * $unit) (55 * $unit)
+    $bgBrush = [System.Drawing.SolidBrush]::new([System.Drawing.Color]::FromArgb(255, 13, 25, 39))
     $graphics.FillPath($bgBrush, $cardPath)
 
-    $graphics.SetClip($cardPath)
+    $cardBorder = [System.Drawing.Pen]::new([System.Drawing.Color]::FromArgb(26, 255, 255, 255), [float] (1.5 * $unit))
+    $graphics.DrawPath($cardBorder, $cardPath)
 
-    $glowPath = [System.Drawing.Drawing2D.GraphicsPath]::new()
-    $glowPath.AddEllipse($size * -0.30, $size * -0.24, $size * 1.28, $size * 1.02)
-    $glowBrush = [System.Drawing.Drawing2D.PathGradientBrush]::new($glowPath)
-    $glowBrush.CenterColor = [System.Drawing.Color]::FromArgb(130, 120, 242, 255)
-    $glowBrush.SurroundColors = [System.Drawing.Color[]] @([System.Drawing.Color]::FromArgb(0, 120, 242, 255))
-    $graphics.FillPath($glowBrush, $glowPath)
+    $orbitRect = [System.Drawing.RectangleF]::new(54 * $unit, 54 * $unit, 148 * $unit, 148 * $unit)
+    $orbitShadowRect = [System.Drawing.RectangleF]::new(54 * $unit, 58 * $unit, 148 * $unit, 148 * $unit)
+    $orbitShadow = [System.Drawing.Pen]::new([System.Drawing.Color]::FromArgb(87, 3, 10, 17), [float] (22 * $unit))
+    $orbitShadow.StartCap = $orbitShadow.EndCap = [System.Drawing.Drawing2D.LineCap]::Round
+    $graphics.DrawArc($orbitShadow, $orbitShadowRect, 34, 280)
 
-    $highlightRect = [System.Drawing.RectangleF]::new($pad, $pad, $cardSize, $cardSize)
-    $highlightBrush = [System.Drawing.Drawing2D.LinearGradientBrush]::new(
-        $highlightRect,
-        [System.Drawing.Color]::FromArgb(34, 255, 255, 255),
-        [System.Drawing.Color]::FromArgb(0, 255, 255, 255),
-        90.0
+    $orbitBrush = [System.Drawing.Drawing2D.LinearGradientBrush]::new(
+        (New-PointF (79 * $unit) (61 * $unit)),
+        (New-PointF (185 * $unit) (197 * $unit)),
+        [System.Drawing.Color]::FromArgb(255, 247, 251, 252),
+        [System.Drawing.Color]::FromArgb(255, 136, 217, 214)
     )
-    $graphics.FillPath($highlightBrush, $cardPath)
-    $graphics.ResetClip()
-
-    $borderPen = [System.Drawing.Pen]::new([System.Drawing.Color]::FromArgb(32, 255, 255, 255), [Math]::Max(1, $size * 0.012))
-    $graphics.DrawPath($borderPen, $cardPath)
-
-    [System.Drawing.PointF[]] $shadowPoints = @(
-        (New-PointF ($size * 0.30) ($size * 0.73)),
-        (New-PointF ($size * 0.30) ($size * 0.34)),
-        (New-PointF ($size * 0.50) ($size * 0.55)),
-        (New-PointF ($size * 0.70) ($size * 0.34)),
-        (New-PointF ($size * 0.70) ($size * 0.73))
+    $orbitBrush.GammaCorrection = $true
+    $orbitBlend = [System.Drawing.Drawing2D.ColorBlend]::new(3)
+    $orbitBlend.Colors = [System.Drawing.Color[]] @(
+        [System.Drawing.Color]::FromArgb(255, 247, 251, 252),
+        [System.Drawing.Color]::FromArgb(255, 217, 236, 238),
+        [System.Drawing.Color]::FromArgb(255, 136, 217, 214)
     )
-    foreach ($point in $shadowPoints) {
-        $point.X += $size * 0.012
-        $point.Y += $size * 0.02
-    }
+    $orbitBlend.Positions = [single[]] @(0.0, 0.55, 1.0)
+    $orbitBrush.InterpolationColors = $orbitBlend
+    $orbitPen = [System.Drawing.Pen]::new($orbitBrush, [float] (18 * $unit))
+    $orbitPen.StartCap = $orbitPen.EndCap = [System.Drawing.Drawing2D.LineCap]::Round
+    $graphics.DrawArc($orbitPen, $orbitRect, 34, 280)
 
-    $shadowPen = [System.Drawing.Pen]::new([System.Drawing.Color]::FromArgb(70, 0, 0, 0), [float] ($size * 0.13))
-    $shadowPen.StartCap = [System.Drawing.Drawing2D.LineCap]::Round
-    $shadowPen.EndCap = [System.Drawing.Drawing2D.LineCap]::Round
-    $shadowPen.LineJoin = [System.Drawing.Drawing2D.LineJoin]::Round
-    $graphics.DrawLines($shadowPen, $shadowPoints)
+    $orbitNode = [System.Drawing.SolidBrush]::new([System.Drawing.Color]::FromArgb(255, 185, 246, 235))
+    $graphics.FillEllipse($orbitNode, (180.3 - 5.5) * $unit, (75.7 - 5.5) * $unit, 11 * $unit, 11 * $unit)
 
-    [System.Drawing.PointF[]] $markPoints = @(
-        (New-PointF ($size * 0.30) ($size * 0.73)),
-        (New-PointF ($size * 0.30) ($size * 0.34)),
-        (New-PointF ($size * 0.50) ($size * 0.55)),
-        (New-PointF ($size * 0.70) ($size * 0.34)),
-        (New-PointF ($size * 0.70) ($size * 0.73))
+    $lensShadowPath = New-LensPath $unit 3
+    $lensShadowPen = [System.Drawing.Pen]::new([System.Drawing.Color]::FromArgb(77, 2, 8, 14), [float] (17 * $unit))
+    $lensShadowPen.LineJoin = [System.Drawing.Drawing2D.LineJoin]::Round
+    $graphics.DrawPath($lensShadowPen, $lensShadowPath)
+
+    $lensPath = New-LensPath $unit
+    $lensBrush = [System.Drawing.Drawing2D.LinearGradientBrush]::new(
+        (New-PointF (108 * $unit) (90 * $unit)),
+        (New-PointF (149 * $unit) (167 * $unit)),
+        [System.Drawing.Color]::White,
+        [System.Drawing.Color]::FromArgb(255, 203, 229, 231)
     )
+    $lensBrush.GammaCorrection = $true
+    $lensPen = [System.Drawing.Pen]::new($lensBrush, [float] (13 * $unit))
+    $lensPen.LineJoin = [System.Drawing.Drawing2D.LineJoin]::Round
+    $graphics.DrawPath($lensPen, $lensPath)
 
-    $markBrush = [System.Drawing.Drawing2D.LinearGradientBrush]::new(
-        (New-PointF ($size * 0.25) ($size * 0.25)),
-        (New-PointF ($size * 0.76) ($size * 0.80)),
-        [System.Drawing.Color]::FromArgb(255, 247, 252, 255),
-        [System.Drawing.Color]::FromArgb(255, 98, 215, 255)
-    )
-    $markPen = [System.Drawing.Pen]::new($markBrush, [float] ($size * 0.13))
-    $markPen.StartCap = [System.Drawing.Drawing2D.LineCap]::Round
-    $markPen.EndCap = [System.Drawing.Drawing2D.LineCap]::Round
-    $markPen.LineJoin = [System.Drawing.Drawing2D.LineJoin]::Round
-    $graphics.DrawLines($markPen, $markPoints)
+    $pupilBack = [System.Drawing.SolidBrush]::new([System.Drawing.Color]::FromArgb(255, 7, 19, 30))
+    $pupilBorder = [System.Drawing.Pen]::new([System.Drawing.Color]::FromArgb(42, 255, 255, 255), [float] (2 * $unit))
+    $graphics.FillEllipse($pupilBack, 115 * $unit, 115 * $unit, 26 * $unit, 26 * $unit)
+    $graphics.DrawEllipse($pupilBorder, 115 * $unit, 115 * $unit, 26 * $unit, 26 * $unit)
 
-    $haloPath = [System.Drawing.Drawing2D.GraphicsPath]::new()
-    $haloPath.AddEllipse($size * 0.66, $size * 0.16, $size * 0.16, $size * 0.16)
-    $haloBrush = [System.Drawing.Drawing2D.PathGradientBrush]::new($haloPath)
-    $haloBrush.CenterColor = [System.Drawing.Color]::FromArgb(120, 162, 247, 255)
-    $haloBrush.SurroundColors = [System.Drawing.Color[]] @([System.Drawing.Color]::FromArgb(0, 162, 247, 255))
-    $graphics.FillPath($haloBrush, $haloPath)
+    $lightPath = [System.Drawing.Drawing2D.GraphicsPath]::new()
+    $lightPath.AddEllipse(119.5 * $unit, 119.5 * $unit, 17 * $unit, 17 * $unit)
+    $lightBrush = [System.Drawing.Drawing2D.PathGradientBrush]::new($lightPath)
+    $lightBrush.CenterPoint = New-PointF (124 * $unit) (123 * $unit)
+    $lightBrush.CenterColor = [System.Drawing.Color]::FromArgb(255, 242, 255, 253)
+    $lightBrush.SurroundColors = [System.Drawing.Color[]] @([System.Drawing.Color]::FromArgb(255, 76, 189, 180))
+    $graphics.FillPath($lightBrush, $lightPath)
 
-    $accentBrush = [System.Drawing.SolidBrush]::new([System.Drawing.Color]::FromArgb(255, 162, 247, 255))
-    $graphics.FillEllipse($accentBrush, $size * 0.695, $size * 0.195, $size * 0.09, $size * 0.09)
+    $highlight = [System.Drawing.SolidBrush]::new([System.Drawing.Color]::FromArgb(209, 255, 255, 255))
+    $graphics.FillEllipse($highlight, (124.7 - 2.2) * $unit, (124.6 - 2.2) * $unit, 4.4 * $unit, 4.4 * $unit)
 
-    $bitmap.Save($outputPath, [System.Drawing.Imaging.ImageFormat]::Png)
+    $output = [System.Drawing.Bitmap]::new($size, $size, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+    $outputGraphics = [System.Drawing.Graphics]::FromImage($output)
+    $outputGraphics.CompositingMode = [System.Drawing.Drawing2D.CompositingMode]::SourceCopy
+    $outputGraphics.CompositingQuality = [System.Drawing.Drawing2D.CompositingQuality]::HighQuality
+    $outputGraphics.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+    $outputGraphics.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
+    $outputGraphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+    $outputGraphics.DrawImage($bitmap, [System.Drawing.Rectangle]::new(0, 0, $size, $size))
+    $output.Save($outputPath, [System.Drawing.Imaging.ImageFormat]::Png)
 
-    $accentBrush.Dispose()
-    $haloBrush.Dispose()
-    $haloPath.Dispose()
-    $markPen.Dispose()
-    $markBrush.Dispose()
-    $shadowPen.Dispose()
-    $borderPen.Dispose()
-    $highlightBrush.Dispose()
-    $glowBrush.Dispose()
-    $glowPath.Dispose()
+    $outputGraphics.Dispose()
+    $output.Dispose()
+    $highlight.Dispose()
+    $lightBrush.Dispose()
+    $lightPath.Dispose()
+    $pupilBorder.Dispose()
+    $pupilBack.Dispose()
+    $lensPen.Dispose()
+    $lensBrush.Dispose()
+    $lensPath.Dispose()
+    $lensShadowPen.Dispose()
+    $lensShadowPath.Dispose()
+    $orbitNode.Dispose()
+    $orbitPen.Dispose()
+    $orbitBrush.Dispose()
+    $orbitShadow.Dispose()
+    $cardBorder.Dispose()
     $bgBrush.Dispose()
     $cardPath.Dispose()
     $graphics.Dispose()
@@ -126,8 +154,9 @@ function Draw-BrandIcon([int] $size, [string] $outputPath) {
 }
 
 $outDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$sizes = 16, 32, 48, 128, 256
-foreach ($size in $sizes) {
-    $name = if ($size -eq 256) { "icon-preview.png" } else { "icon-$size.png" }
-    Draw-BrandIcon -size $size -outputPath ([System.IO.Path]::Combine($outDir, $name))
+foreach ($size in 16, 32, 48, 128, 256) {
+    $fileName = if ($size -eq 256) { 'icon-preview.png' } else { 'icon-{0}.png' -f $size }
+    $target = [System.IO.Path]::Combine($outDir, $fileName)
+    Draw-OrbitalLensIcon -size $size -outputPath $target
+    Write-Host ('Generated {0}' -f $target)
 }

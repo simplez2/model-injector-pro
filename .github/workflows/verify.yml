@@ -1,30 +1,57 @@
-name: Verify extension
+name: Verify public extension
 
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   verify:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Checkout without persisted credentials
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '20'
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.11'
 
-      - name: Verify JavaScript syntax and extension layout
+      - name: Verify source and release policy
         run: npm run verify
 
-      - name: Build extension zip
+      - name: Verify public repository allowlist
+        run: python scripts/verify_extension.py --public-tree
+
+      - name: Build allowlist-only archives
         run: npm run package
+
+      - name: Verify latest archive explicitly
+        run: python scripts/verify_extension.py --archive dist/model-injector-pro-latest.zip
+
+      - name: Upload verified archives
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: model-injector-pro
+          path: dist/model-injector-pro-*.zip
+          if-no-files-found: error
+          retention-days: 14

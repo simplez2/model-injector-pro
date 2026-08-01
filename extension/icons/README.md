@@ -1,20 +1,21 @@
-# Icons
+# Icon assets
 
-`icon-source.svg` is the editable source icon for this extension.
+The extension uses an original **Orbital Lens** mark: one deliberately open orbit,
+one vertical optical lens, and one central light point. Its geometry is intentionally
+separate from the OpenAI/ChatGPT interlocking knot and does not reuse their logotype.
 
-Generate PNG icons locally with:
+- `floating-icon.svg` is the monochrome launcher source. Its `#orbit` and `#core`
+  groups are independent so the UI can rotate them in opposite directions.
+- `icon-source.svg` is the 256 px editable application-icon source.
+- `generate-icons.ps1` recreates the 16, 32, 48, and 128 px manifest PNGs plus
+  `icon-preview.png` using only Windows `System.Drawing`.
+
+Generate the raster assets from the repository root:
 
 ```powershell
-cd extension/icons
-./generate-icons.ps1
+./extension/icons/generate-icons.ps1
 ```
 
-The current GitHub connector accepted text/source files but blocked one of the PNG binary blob uploads during this batch operation. The extension manifest therefore does not require PNG icons yet, so the extension can still be loaded from `extension/` without broken icon references.
-
-After generating PNG files locally, you can commit them normally:
-
-```bash
-git add extension/icons/icon-16.png extension/icons/icon-32.png extension/icons/icon-48.png extension/icons/icon-128.png
-git commit -m "chore: add generated extension icons"
-git push origin main
-```
+Keep the launcher geometry in `content.js` aligned with `floating-icon.svg` when the
+inline SVG changes. The intended open state rotates the orbit roughly `42deg` and
+counter-rotates the core roughly `-42deg`; the source itself contains no animation.

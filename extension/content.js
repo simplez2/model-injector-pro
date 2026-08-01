@@ -1,34 +1,70 @@
-// ChatGPT Model Injector Extension Context Script
+// Model Injector Pro for ChatGPT — page-context script
 
 (function () {
     'use strict';
 
     const PREFIX = 'cgpt_v12_';
-    const SCRIPT_BUILD = '2026-05-19-menu-filter-endpoint-guard';
-    const PACKET_LOG_LIMIT = 160;
+    const SCRIPT_BUILD = '2026-07-31-ios-liquid-motion-v14';
+    const PROJECT_REPOSITORY_URL = 'https://github.com/simplez2/model-injector-pro';
+    const PACKET_LOG_LIMIT = 48;
     const MODELS_ENDPOINT = '/backend-api/models';
-    const ACCOUNT_ENDPOINT = '/backend-api/accounts/check';
     const CES_STATS_ENDPOINT = '/ces/statsc/flush';
     const SENTINEL_FINALIZE_ENDPOINT = '/backend-api/sentinel/chat-requirements/finalize';
     const WORKSPACE_AGENT_PREFIX = 'workspace-agent:';
     const HERMES_AGENT_PATH_RE = /\/backend-api\/hermes\/agent\/(agt_[a-z0-9_:-]+)(?:\/|$)/i;
     const AGENT_PAGE_PATH_RE = /\/agents\/a\/(agt_[a-z0-9_:-]+)/i;
+    const AGENT_LINK_SELECTOR = 'a[href*="/agents/a/"], [href*="/agents/a/"], [data-href*="/agents/a/"]';
+    const CONVERSATION_SURFACE_SELECTOR = '[data-message-author-role], [data-testid^="conversation-turn-"], article';
     const CHAT_CONVERSATION_PATH_RE = /\/c\/([0-9a-f]{8}-[0-9a-f-]{20,})/i;
     const BACKEND_CONVERSATION_PATH_RE = /\/backend-api\/conversation\/([0-9a-f]{8}-[0-9a-f-]{20,})/i;
     const BUTTON_SIZE = 56;
     const VIEW_MARGIN = 12;
+    const PANEL_MAIN_HEIGHT = 680;
+    const PANEL_SETTINGS_HEIGHT = 476;
+    const PANEL_MIN_SIDE_HEIGHT = 280;
+    const PANEL_MOTION_DURATION = 400;
+    const PANEL_MOTION_CLOSE_RATE = 1.12;
+    const PANEL_MOTION_PRIME_LEASE = 300;
+    const PANEL_FIRST_PAINT_IDLE_TIMEOUT = 240;
+    const PANEL_MOTION_SAMPLE_COUNT = 25;
+    const PANEL_MOTION_CONTENT_DELAY = 0.22;
     const BUTTON_RING = 194.78;
     const COLLATOR = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
     const COLORS = ['#007aff', '#2563eb', '#0ea5e9', '#14b8a6', '#10b981', '#f59e0b', '#f97316', '#ef4444', '#ec4899', '#8b5cf6'];
     const EFFORTS = ['light', 'standard', 'extended', 'heavy'];
+    // [slug, displayName, thinking, group]
+    // Catalog synced 2026-07-10 from /backend-api/models (title: Latest / GPT-5.5)
+    // "latest" version now exposes official gpt-5-6-thinking + gpt-5-6-pro (not work-mode).
     const PRESETS = [
         ['auto', 'Auto', false, 'default'],
+        // Latest — official GPT-5.6 product line
+        ['gpt-5-6-pro', 'GPT-5.6 Pro', true, 'current'],
+        ['gpt-5-6-thinking', 'GPT-5.6 Thinking', true, 'current'],
+        // GPT-5.5 product line
         ['gpt-5-5-pro', 'GPT-5.5 Pro', true, 'current'],
         ['gpt-5-5-thinking', 'GPT-5.5 Thinking', true, 'current'],
-        ['gpt-5-3', 'GPT-5.3 Instant', false, 'current'],
-        ['gpt-5-4-thinking', 'GPT-5.4 Thinking', true, 'current'],
+        ['gpt-5-5-instant', 'GPT-5.5 Instant', false, 'current'],
+        ['gpt-5-5', 'GPT-5.5', false, 'current'],
+        ['gpt-5-5-mini', 'GPT-5.5 Mini', false, 'current'],
+        // Soft-deprecated 5.4 / 5.3 (hard deprecation 2026-07-23)
         ['gpt-5-4-pro', 'GPT-5.4 Pro', true, 'current'],
+        ['gpt-5-4-thinking', 'GPT-5.4 Thinking', true, 'current'],
+        ['gpt-5-4-t-mini', 'GPT-5.4 Thinking Mini', true, 'current'],
+        ['gpt-5-3-instant', 'GPT-5.3 Instant', false, 'current'],
+        ['gpt-5-3', 'GPT-5.3', false, 'current'],
+        ['gpt-5-3-mini', 'GPT-5.3 Mini', false, 'current'],
+        // Reasoning / special
         ['o3', 'o3', true, 'reasoning'],
+        ['research', 'Deep Research', true, 'special'],
+        ['agent-mode', 'Agent', false, 'special'],
+        // Work Mode internal slugs (dotted version, is_work_mode_model)
+        // Note: normal chat may silently fall back; keep for experimental inject.
+        ['gpt-5.5-wm', 'GPT-5.5 Work', true, 'work'],
+        ['gpt-5.5-cca-wm', 'GPT-5.5 CCA', true, 'work'],
+        ['gpt-5.6-sol-wm', 'GPT-5.6 Sol', true, 'work'],
+        ['gpt-5.6-terra-wm', 'GPT-5.6 Terra', true, 'work'],
+        ['gpt-5.6-luna-wm', 'GPT-5.6 Luna', true, 'work'],
+        // Legacy inject targets
         ['gpt-5-2', 'GPT-5.2', false, 'legacy'],
         ['gpt-5-2-instant', 'GPT-5.2 Instant', false, 'legacy'],
         ['gpt-5-2-thinking', 'GPT-5.2 Thinking', true, 'legacy'],
@@ -44,8 +80,6 @@
         ['gpt-5-t-mini', 'GPT-5 Thinking Mini', true, 'legacy'],
         ['gpt-5-pro', 'GPT-5 Pro', true, 'legacy'],
         ['gpt-4.5', 'GPT-4.5', false, 'legacy'],
-        ['research', 'Deep Research', true, 'special'],
-        ['agent-mode', 'Agent', false, 'special'],
         ['chatgpt_alpha_model_external_access_reserved_gate_13', 'Alpha', true, 'special']
     ];
     const MODELS_REQUEST_HEADER_ALLOWLIST = new Set([
@@ -55,10 +89,7 @@
         'chatgpt-account-id',
         'oai-client-build-number',
         'oai-client-version',
-        'oai-device-id',
         'oai-language',
-        'oai-session-id',
-        'x-oai-is',
         'x-openai-target-path',
         'x-openai-target-route'
     ]);
@@ -76,13 +107,24 @@
     const PRESET_ORDER = new Map(PRESETS.map((item, index) => [item[0], index]));
     const MENU_LABELS = {
         auto: 'Auto',
-        'gpt-5-5-pro': 'Pro',
+        // 5.6 official
+        'gpt-5-6-pro': 'Pro',
+        'gpt-5-6-thinking': 'Thinking',
+        // 5.5
+        'gpt-5-5': 'Auto',
+        'gpt-5-5-instant': 'Instant',
         'gpt-5-5-thinking': 'Thinking',
+        'gpt-5-5-pro': 'Pro',
+        'gpt-5-5-mini': 'Mini',
+        // 5.4
         'gpt-5-4-pro': 'Pro',
         'gpt-5-4-thinking': 'Thinking',
         'gpt-5-4-t-mini': 'Thinking Mini',
-        'gpt-5-3': 'Instant',
+        // 5.3
+        'gpt-5-3': 'Standard',
+        'gpt-5-3-instant': 'Instant',
         'gpt-5-3-mini': 'Mini',
+        // 5.2 / 5.1 / 5
         'gpt-5-2': 'Standard',
         'gpt-5-2-instant': 'Instant',
         'gpt-5-2-thinking': 'Thinking',
@@ -97,6 +139,13 @@
         'gpt-5-t-mini': 'Thinking Mini',
         'gpt-5-mini': 'Mini',
         'gpt-5-pro': 'Pro',
+        // Work Mode (dotted slugs)
+        'gpt-5.5-wm': 'Work',
+        'gpt-5.5-cca-wm': 'CCA',
+        'gpt-5.6-sol-wm': 'Sol',
+        'gpt-5.6-terra-wm': 'Terra',
+        'gpt-5.6-luna-wm': 'Luna',
+        // Other
         'o3': 'o3',
         'o3-pro': 'o3-pro',
         'gpt-4.5': 'GPT-4.5',
@@ -105,16 +154,20 @@
         'agent-mode': 'Agent',
         chatgpt_alpha_model_external_access_reserved_gate_13: 'Alpha'
     };
+    // Family matchers: accept both hyphen (gpt-5-5 / gpt-5-6-thinking)
+    // and dotted work-mode slugs (gpt-5.5-wm / gpt-5.6-terra-wm).
+    // Longer / more specific families must come first.
     const MODEL_MENU_SECTIONS = [
         {
             key: 'gpt',
             titleKey: 'section_gpt',
             families: [
-                ['GPT-5.5', /^gpt-5-5(?:$|-)/i],
-                ['GPT-5.4', /^gpt-5-4(?:$|-)/i],
-                ['GPT-5.3', /^gpt-5-3(?:$|-)/i],
-                ['GPT-5.2', /^gpt-5-2(?:$|-)/i],
-                ['GPT-5.1', /^gpt-5-1(?:$|-)/i],
+                ['GPT-5.6', /^gpt-5[.-]6(?:$|-)/i],
+                ['GPT-5.5', /^gpt-5[.-]5(?:$|-)/i],
+                ['GPT-5.4', /^gpt-5[.-]4(?:$|-)/i],
+                ['GPT-5.3', /^gpt-5[.-]3(?:$|-)/i],
+                ['GPT-5.2', /^gpt-5[.-]2(?:$|-)/i],
+                ['GPT-5.1', /^gpt-5[.-]1(?:$|-)/i],
                 ['GPT-5', /^gpt-5(?:$|-)/i]
             ]
         },
@@ -141,9 +194,9 @@
         }
     ];
     const LOAD_DELAY = 1500;
-    const CHATGPT_ICON_PATH = 'm297.06 130.97c7.26-21.79 4.76-45.66-6.85-65.48-17.46-30.4-52.56-46.04-86.84-38.68-15.25-17.18-37.16-26.95-60.13-26.81-35.04-.08-66.13 22.48-76.91 55.82-22.51 4.61-41.94 18.7-53.31 38.67-17.59 30.32-13.58 68.54 9.92 94.54-7.26 21.79-4.76 45.66 6.85 65.48 17.46 30.4 52.56 46.04 86.84 38.68 15.24 17.18 37.16 26.95 60.13 26.8 35.06.09 66.16-22.49 76.94-55.86 22.51-4.61 41.94-18.7 53.31-38.67 17.57-30.32 13.55-68.51-9.94-94.51zm-120.28 168.11c-14.03.02-27.62-4.89-38.39-13.88.49-.26 1.34-.73 1.89-1.07l63.72-36.8c3.26-1.85 5.26-5.32 5.24-9.07v-89.83l26.93 15.55c.29.14.48.42.52.74v74.39c-.04 33.08-26.83 59.9-59.91 59.97zm-128.84-55.03c-7.03-12.14-9.56-26.37-7.15-40.18.47.28 1.3.79 1.89 1.13l63.72 36.8c3.23 1.89 7.23 1.89 10.47 0l77.79-44.92v31.1c.02.32-.13.63-.38.83l-64.41 37.19c-28.69 16.52-65.33 6.7-81.92-21.95zm-16.77-139.09c7-12.16 18.05-21.46 31.21-26.29 0 .55-.03 1.52-.03 2.2v73.61c-.02 3.74 1.98 7.21 5.23 9.06l77.79 44.91-26.93 15.55c-.27.18-.61.21-.91.08l-64.42-37.22c-28.63-16.58-38.45-53.21-21.95-81.89zm221.26 51.49-77.79-44.92 26.93-15.54c.27-.18.61-.21.91-.08l64.42 37.19c28.68 16.57 38.51 53.26 21.94 81.94-7.01 12.14-18.05 21.44-31.2 26.28v-75.81c.03-3.74-1.96-7.2-5.2-9.06zm26.8-40.34c-.47-.29-1.3-.79-1.89-1.13l-63.72-36.8c-3.23-1.89-7.23-1.89-10.47 0l-77.79 44.92v-31.1c-.02-.32.13-.63.38-.83l64.41-37.16c28.69-16.55 65.37-6.7 81.91 22 6.99 12.12 9.52 26.31 7.15 40.1zm-168.51 55.43-26.94-15.55c-.29-.14-.48-.42-.52-.74v-74.39c.02-33.12 26.89-59.96 60.01-59.94 14.01 0 27.57 4.92 38.34 13.88-.49.26-1.33.73-1.89 1.07l-63.72 36.8c-3.26 1.85-5.26 5.31-5.24 9.06l-.04 89.79zm14.63-31.54 34.65-20.01 34.65 20v40.01l-34.65 20-34.65-20z';
     const PRESET_MAP = new Map(PRESETS.map(([id, name, thinking, group]) => [id, { id, name, thinking, group }]));
     const tokenCache = new Map();
+    let packetLog = [];
     const nativeFetch = typeof window.fetch === 'function' ? window.fetch.bind(window) : null;
     const nativeSendBeacon = typeof navigator.sendBeacon === 'function' ? navigator.sendBeacon.bind(navigator) : null;
     const nativeXHROpen = window.XMLHttpRequest?.prototype?.open;
@@ -167,20 +220,47 @@
         pos: readJson('pos', null),
         cnt: 0
     };
+    const liveApiModelIds = new Set();
     if (S.model === 'auto') S.model = '';
+    if (!EFFORTS.includes(S.effort)) S.effort = 'standard';
     if (isHiddenModelId(S.model)) S.model = '';
     if (Array.isArray(S.custom)) S.custom = S.custom.filter(id => !isHiddenModelId(id));
     if (Array.isArray(S.recent)) S.recent = S.recent.filter(id => !isHiddenModelId(id));
+    if (!S.debug) writePacketLog([]);
 
     let host = null;
     let refs = {};
     let modelsRequestSnapshot = null;
-    let backendRequestHeadersSnapshot = null;
     let lastSentinelFinalize = null;
     let observer = null;
     let contextTimer = 0;
-    let dragState = null;
+    let contextIdleJob = 0;
+    let tokenRefreshDeferred = false;
     let suppressClick = false;
+    let lastFocusedElement = null;
+    let panelFocusFrame = 0;
+    let panelFocusTimer = 0;
+    let panelMotionAnimation = null;
+    let panelContentMotionAnimation = null;
+    let panelBridgeMotionAnimation = null;
+    let hostBridgeMotionAnimation = null;
+    let panelMotionAnimationKey = '';
+    let panelMotionOpening = null;
+    let panelMotionGeneration = 0;
+    let panelMotionLayoutKey = '';
+    let panelMotionPrimeFrame = 0;
+    let panelMotionPrimeTimer = 0;
+    let panelMotionGeometry = { originX: 340, originY: 652, shiftX: 0, shiftY: 44, width: 368, height: 680 };
+    let panelFirstPaintIdleJob = 0;
+    let panelFirstPaintIdleUsesTimeout = false;
+    let panelFirstPaintFrame = 0;
+    let panelFirstPaintGeneration = 0;
+    let panelFirstPaintState = 'cold';
+    let buttonPressTimer = 0;
+    let buttonMotionTimer = 0;
+    let liveCatalogSyncAttempted = false;
+    let panelToggleGeneration = 0;
+    let iconMotionCycle = 0;
     let hookInstalled = false;
     let wrappedFetch = null;
     let wrappedSendBeacon = null;
@@ -188,6 +268,8 @@
     let wrappedXHRSend = null;
     let fetchHookKeepalive = 0;
     let calcFeedbackTimer = 0;
+    let modelConfirmTimer = 0;
+    let reducedMotionQuery = null;
     let lastStats = { msgs: 0, plain: 0, chat: null, used: 0, limit: 196000, pct: 0 };
     let modelSyncStatus = 'idle';
     let injectionDiagnostic = {
@@ -262,10 +344,13 @@
             search_clear: '清除搜索',
             no_menu_results: '没有匹配结果',
             custom_group: '自定义',
+            delete_custom_model: '删除自定义模型',
             title_enable: '启用注入',
             subtitle_enable: '覆盖请求',
             title_effort: '思考深度',
             subtitle_effort: '推理模型生效',
+            state_on: '已开启',
+            state_off: '已关闭',
             title_context: '上下文用量',
             used: '已用',
             free: '剩余',
@@ -275,12 +360,16 @@
             theme_color: '主题颜色',
             custom_color: '自定义颜色',
             debug_mode: '调试模式（打开控制台查看日志）',
+            privacy_title: '隐私优先',
+            privacy_body: '抓包诊断仅保留在内存中，关闭调试模式后会立即清除。',
+            diagnostic_clear: '清除诊断',
             language: '语言',
             choose_model: '选择模型',
             refresh_list: '刷新列表',
             refresh_context: '刷新上下文统计',
             add_model: '添加模型 slug',
             support_dev: '感谢开发者',
+            view_repository: '项目仓库',
             tooltip_context: '上下文长度',
             tooltip_reasoning: '推理类型',
             tooltip_version: '版本',
@@ -355,10 +444,13 @@
             search_clear: 'Clear search',
             no_menu_results: 'No matching results',
             custom_group: 'Custom',
+            delete_custom_model: 'Delete custom model',
             title_enable: 'Enable override',
             subtitle_enable: 'Override request',
             title_effort: 'Thinking effort',
             subtitle_effort: 'Applies to reasoning models',
+            state_on: 'On',
+            state_off: 'Off',
             title_context: 'Context usage',
             used: 'Used',
             free: 'Free',
@@ -368,12 +460,16 @@
             theme_color: 'Theme color',
             custom_color: 'Custom color',
             debug_mode: 'Debug mode (open console for logs)',
+            privacy_title: 'Privacy by default',
+            privacy_body: 'Packet diagnostics stay in memory and are erased when debug mode is turned off.',
+            diagnostic_clear: 'Clear diagnostics',
             language: 'Language',
             choose_model: 'Choose model',
             refresh_list: 'Refresh list',
             refresh_context: 'Refresh context stats',
             add_model: 'Add model slug',
             support_dev: 'Support developer',
+            view_repository: 'Source repository',
             tooltip_context: 'Context window',
             tooltip_reasoning: 'Reasoning mode',
             tooltip_version: 'Version',
@@ -448,10 +544,13 @@
             search_clear: '検索をクリア',
             no_menu_results: '一致する結果がありません',
             custom_group: 'カスタム',
+            delete_custom_model: 'カスタムモデルを削除',
             title_enable: '上書きを有効化',
             subtitle_enable: 'リクエストを上書き',
             title_effort: '思考強度',
             subtitle_effort: '推論モデルのみ有効',
+            state_on: 'オン',
+            state_off: 'オフ',
             title_context: 'コンテキスト使用量',
             used: '使用',
             free: '残り',
@@ -461,12 +560,16 @@
             theme_color: 'テーマカラー',
             custom_color: 'カスタムカラー',
             debug_mode: 'デバッグモード（コンソールで確認）',
+            privacy_title: 'プライバシー優先',
+            privacy_body: 'パケット診断はメモリ内だけに保持され、デバッグモードをオフにすると消去されます。',
+            diagnostic_clear: '診断を消去',
             language: '言語',
             choose_model: 'モデルを選択',
             refresh_list: '一覧を更新',
             refresh_context: 'コンテキストを更新',
             add_model: 'モデル slug を追加',
             support_dev: '開発者を支援',
+            view_repository: 'ソースリポジトリ',
             tooltip_context: 'コンテキスト長',
             tooltip_reasoning: '推論タイプ',
             tooltip_version: 'バージョン',
@@ -541,10 +644,13 @@
             search_clear: 'Очистить поиск',
             no_menu_results: 'Нет совпадений',
             custom_group: 'Пользовательские',
+            delete_custom_model: 'Удалить пользовательскую модель',
             title_enable: 'Включить подмену',
             subtitle_enable: 'Переопределять запрос',
             title_effort: 'Глубина мышления',
             subtitle_effort: 'Только для reasoning-моделей',
+            state_on: 'Включено',
+            state_off: 'Выключено',
             title_context: 'Использование контекста',
             used: 'Использовано',
             free: 'Осталось',
@@ -554,12 +660,16 @@
             theme_color: 'Цвет темы',
             custom_color: 'Свой цвет',
             debug_mode: 'Режим отладки (смотрите консоль)',
+            privacy_title: 'Приватность по умолчанию',
+            privacy_body: 'Диагностика пакетов хранится только в памяти и очищается при отключении режима отладки.',
+            diagnostic_clear: 'Очистить диагностику',
             language: 'Язык',
             choose_model: 'Выберите модель',
             refresh_list: 'Обновить список',
             refresh_context: 'Обновить контекст',
             add_model: 'Добавить slug модели',
             support_dev: 'Поддержать разработчика',
+            view_repository: 'Репозиторий исходного кода',
             tooltip_context: 'Окно контекста',
             tooltip_reasoning: 'Режим рассуждения',
             tooltip_version: 'Версия',
@@ -620,11 +730,39 @@
     function saveJson(key, value) { try { localStorage.setItem(storageKey(key), JSON.stringify(value)); } catch {} }
     function save(key, value) { typeof value === 'object' ? saveJson(key, value) : saveValue(key, value); }
     function readPacketLog() {
-        const value = readJson('packet_log', []);
-        return Array.isArray(value) ? value : [];
+        return packetLog.slice();
     }
     function writePacketLog(entries) {
-        saveJson('packet_log', Array.isArray(entries) ? entries.slice(-PACKET_LOG_LIMIT) : []);
+        packetLog = Array.isArray(entries) ? entries.slice(-PACKET_LOG_LIMIT) : [];
+    }
+    function clearDiagnosticArtifacts() {
+        writePacketLog([]);
+        document.documentElement.removeAttribute('data-mi-packet-log-size');
+        document.documentElement.removeAttribute('data-mi-diagnostic');
+    }
+
+    function resetDiagnostics() {
+        clearDiagnosticArtifacts();
+        injectionDiagnostic = {
+            selected: S.model || '',
+            lastModel: '',
+            originalModel: '',
+            thinkingEffort: '',
+            effortRequested: '',
+            effortEnabled: false,
+            effortApplied: false,
+            responseModel: '',
+            routeStatus: 'unknown',
+            workspaceAgentId: '',
+            workspaceAgentName: '',
+            workspaceAgentStatus: 'unknown',
+            at: '',
+            error: '',
+            skipReason: '',
+            packetRequest: null,
+            packetResponse: null
+        };
+        updateDiagnostics();
     }
 
     function sanitizeStringList(value) {
@@ -660,7 +798,10 @@
                 tools: sanitizeStringList(item.tools),
                 reasoning: typeof item.reasoning === 'string' ? item.reasoning : '',
                 configurableEffort: Boolean(item.configurableEffort),
-                thinkingEfforts: sanitizeStringList(item.thinkingEfforts),
+                thinkingEfforts: sanitizeStringList(extractThinkingEffortIds(item.thinkingEfforts)),
+                workMode: Boolean(item.workMode),
+                deprecated: Boolean(item.deprecated),
+                deprecationDate: typeof item.deprecationDate === 'string' ? item.deprecationDate : '',
                 category: typeof item.category === 'string' ? item.category : '',
                 categoryName: typeof item.categoryName === 'string' ? item.categoryName : '',
                 categoryLabel: typeof item.categoryLabel === 'string' ? item.categoryLabel : '',
@@ -712,6 +853,13 @@
     function escapeHtml(value) { return String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;'); }
     function normalizeHex(value) { return typeof value === 'string' && /^#[0-9a-fA-F]{6}$/.test(value.trim()) ? value.trim().toLowerCase() : null; }
     function hexToRgb(value) { const hex = normalizeHex(value); if (!hex) return '0, 122, 255'; return `${parseInt(hex.slice(1, 3), 16)}, ${parseInt(hex.slice(3, 5), 16)}, ${parseInt(hex.slice(5, 7), 16)}`; }
+    function getReadableAccentText(value) {
+        const hex = normalizeHex(value) || '#007aff';
+        const red = parseInt(hex.slice(1, 3), 16);
+        const green = parseInt(hex.slice(3, 5), 16);
+        const blue = parseInt(hex.slice(5, 7), 16);
+        return ((red * 299 + green * 587 + blue * 114) / 255000) > 0.62 ? '#071019' : '#ffffff';
+    }
     function truncate(value, length) { const text = String(value || ''); return text.length > length ? `${text.slice(0, Math.max(0, length - 3))}...` : text; }
     function formatTokens(value) {
         const number = Number(value) || 0;
@@ -722,6 +870,7 @@
     function fmtTok(value) { return Number(value) >= 1000 ? `${(Number(value) / 1000).toFixed(1).replace(/\.0$/, '')}k` : String(Math.round(Number(value) || 0)); }
     function sortModelEntries(a, b) { return COLLATOR.compare(a?.name || a?.id || '', b?.name || b?.id || ''); }
     function getApiEntry(id) { return S.api.find(item => item.id === id) || null; }
+    function isLiveCatalogModel(id) { return liveApiModelIds.has(id); }
     function isWorkspaceAgentSelection(id) { return typeof id === 'string' && id.startsWith(WORKSPACE_AGENT_PREFIX); }
     function makeWorkspaceAgentSelection(id) { return id ? `${WORKSPACE_AGENT_PREFIX}${id}` : ''; }
     function getWorkspaceAgentId(selection = S.model) { return isWorkspaceAgentSelection(selection) ? selection.slice(WORKSPACE_AGENT_PREFIX.length) : ''; }
@@ -751,8 +900,13 @@
     function isThinkingModel(id, entry) {
         if (!id) return false;
         const model = entry || getApiEntry(id);
+        if (model?.configurableEffort) return true;
         if (model?.reasoning && !/^(none|auto)$/i.test(model.reasoning)) return true;
-        return Boolean(PRESET_MAP.get(id)?.thinking || /(^o[1-4])|thinking|reasoning|(?:^|-)t-mini$|(?:^|-)pro$|alpha/i.test(id));
+        if (model?.workMode) return true;
+        return Boolean(
+            PRESET_MAP.get(id)?.thinking
+            || /(^o[1-4])|thinking|reasoning|(?:^|-)t-mini$|(?:^|-)pro$|(?:^|-)wm$|alpha/i.test(id)
+        );
     }
     function mapEffort(value) { return value === 'light' ? 'min' : value === 'heavy' ? 'max' : value || 'standard'; }
     function touchRecent(id) {
@@ -763,9 +917,13 @@
     function getEffectiveLimit() { return Number(isWorkspaceAgentSelection(S.model) ? 0 : getApiEntry(S.model)?.tokens) || 196000; }
     function getToneColor(pct) { return pct >= 90 ? '#ef4444' : pct >= 70 ? '#f59e0b' : S.bgColor; }
     function trimCache() {
-        if (tokenCache.size <= 600) return;
-        const keys = [...tokenCache.keys()];
-        for (let index = 0; index < 200; index += 1) tokenCache.delete(keys[index]);
+        if (tokenCache.size <= 96) return;
+        let removed = 0;
+        for (const key of tokenCache.keys()) {
+            tokenCache.delete(key);
+            removed += 1;
+            if (removed >= 32) break;
+        }
     }
     function q(id) { return refs[id] || null; }
     function cleanMessageText(text) {
@@ -779,7 +937,7 @@
     function extractMessageText(node) {
         if (!node) return '';
         const preferred = node.querySelector?.('.markdown, .prose, .whitespace-pre-wrap, [data-message-text]');
-        const text = preferred?.innerText || preferred?.textContent || node.innerText || node.textContent || '';
+        const text = preferred?.textContent || node.textContent || preferred?.innerText || node.innerText || '';
         return cleanMessageText(text);
     }
     function collectMessages() {
@@ -807,21 +965,22 @@
     }
     function estimateTextTokens(text) {
         if (!text) return 0;
+        const tokenizer = getTokenizerApi();
+        if (!tokenizer) return Math.ceil(text.length / 4);
         if (tokenCache.has(text)) return tokenCache.get(text);
 
-        let tokens = 0;
         try {
-            const tokenizer = getTokenizerApi();
-            if (tokenizer?.countTokens) tokens = tokenizer.countTokens(text);
-            else if (tokenizer?.encode) tokens = tokenizer.encode(text).length;
-            else tokens = Math.ceil(text.length / 4);
+            const tokens = tokenizer.countTokens
+                ? tokenizer.countTokens(text)
+                : tokenizer.encode
+                ? tokenizer.encode(text).length
+                : Math.ceil(text.length / 4);
+            tokenCache.set(text, tokens);
+            trimCache();
+            return tokens;
         } catch {
-            tokens = Math.ceil(text.length / 4);
+            return Math.ceil(text.length / 4);
         }
-
-        tokenCache.set(text, tokens);
-        trimCache();
-        return tokens;
     }
     function countConversationTokens() {
         const messages = collectMessages();
@@ -859,9 +1018,63 @@
 
         updateContextRing(pct);
     }
+    function cancelContextIdleJob() {
+        if (!contextIdleJob) return;
+        if (typeof window.cancelIdleCallback === 'function') window.cancelIdleCallback(contextIdleJob);
+        else window.clearTimeout(contextIdleJob);
+        contextIdleJob = 0;
+    }
+    function runScheduledTokenUpdate() {
+        contextTimer = 0;
+        cancelContextIdleJob();
+        const run = () => {
+            contextIdleJob = 0;
+            if (isPanelMotionActive()) {
+                tokenRefreshDeferred = true;
+                return;
+            }
+            if (!document.hidden) recalcTokens();
+        };
+        if (typeof window.requestIdleCallback === 'function') {
+            contextIdleJob = window.requestIdleCallback(run, { timeout: 900 });
+        } else {
+            contextIdleJob = window.setTimeout(run, 0);
+        }
+    }
     function scheduleTokenUpdate(immediate = false) {
+        if (document.hidden) return;
         if (contextTimer) window.clearTimeout(contextTimer);
-        contextTimer = window.setTimeout(recalcTokens, immediate ? 0 : 500);
+        cancelContextIdleJob();
+        if (isPanelMotionActive()) {
+            tokenRefreshDeferred = true;
+            return;
+        }
+        if (immediate) runScheduledTokenUpdate();
+        else contextTimer = window.setTimeout(runScheduledTokenUpdate, 650);
+    }
+
+    function isPanelMotionActive() {
+        return Boolean(q('mi-p')?.classList.contains('is-motion-active'));
+    }
+    function elementMatchesOrContains(node, selector) {
+        if (!node || node.nodeType !== Node.ELEMENT_NODE) return false;
+        return Boolean(node.matches?.(selector) || node.querySelector?.(selector));
+    }
+    function mutationTouchesConversation(record, target) {
+        if (target?.closest?.(CONVERSATION_SURFACE_SELECTOR)) return true;
+        for (const nodes of [record.addedNodes, record.removedNodes]) {
+            for (const node of nodes) {
+                if (elementMatchesOrContains(node, CONVERSATION_SURFACE_SELECTOR)) return true;
+            }
+        }
+        return false;
+    }
+    function mutationTouchesWorkspaceAgent(record, target) {
+        if (target?.closest?.(AGENT_LINK_SELECTOR)) return true;
+        for (const node of record.addedNodes || []) {
+            if (elementMatchesOrContains(node, AGENT_LINK_SELECTOR)) return true;
+        }
+        return false;
     }
     function setupAutoTokenRefresh() {
         if (observer || !document.body) return;
@@ -873,16 +1086,13 @@
                 if (target?.closest?.('#mi')) continue;
                 if (record.type === 'characterData') {
                     const parent = record.target?.parentElement;
-                    if (parent?.closest?.('[data-message-author-role], article, main')) {
-                        relevant = true;
-                        break;
-                    }
+                    if (parent?.closest?.(CONVERSATION_SURFACE_SELECTOR)) relevant = true;
                 }
                 if (record.addedNodes?.length || record.removedNodes?.length) {
-                    relevant = true;
-                    shouldScanAgents = true;
-                    break;
+                    if (!relevant && mutationTouchesConversation(record, target)) relevant = true;
+                    if (!shouldScanAgents && mutationTouchesWorkspaceAgent(record, target)) shouldScanAgents = true;
                 }
+                if (relevant && shouldScanAgents) break;
             }
             if (relevant) scheduleTokenUpdate();
             if (shouldScanAgents) scheduleWorkspaceAgentScan();
@@ -893,11 +1103,36 @@
             subtree: true,
             characterData: true
         });
+
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden) return;
+            scheduleTokenUpdate(true);
+            scheduleWorkspaceAgentScan(250);
+        }, { passive: true });
+    }
+
+    function refreshWhenTokenizerReady(attempt = 0) {
+        if (getTokenizerApi()) {
+            tokenCache.clear();
+            scheduleTokenUpdate(true);
+            return;
+        }
+        if (attempt < 20) window.setTimeout(() => refreshWhenTokenizerReady(attempt + 1), 400);
     }
 
     let agentScanTimer = 0;
+    let agentScanDeferred = false;
     let modelMenuQuery = '';
     let modelMenuAgentOnly = false;
+    let modelMenuRenderFrame = 0;
+
+    function scheduleDropdownFilterRender() {
+        if (modelMenuRenderFrame) return;
+        modelMenuRenderFrame = requestAnimationFrame(() => {
+            modelMenuRenderFrame = 0;
+            renderDropdown();
+        });
+    }
 
     function mergeSourceValue(previous, next) {
         const parts = new Set(String(previous || '').split('+').filter(Boolean));
@@ -905,7 +1140,16 @@
         return [...parts].join('+') || next || previous || 'page';
     }
 
-    function registerWorkspaceAgent(agent, source = 'page') {
+    function commitWorkspaceAgentCatalog() {
+        saveJson('agents', S.agents);
+        saveValue('laf', S.lastAgentFetch);
+        renderDropdown();
+        renderRecent();
+        updateInfo();
+        updateDiagnostics();
+    }
+
+    function registerWorkspaceAgent(agent, source = 'page', options = {}) {
         const id = typeof agent?.id === 'string' ? agent.id.trim() : '';
         if (!/^agt_[\w:-]+$/i.test(id)) return false;
 
@@ -934,18 +1178,13 @@
         if (!changed) return false;
         S.agents = sanitizeWorkspaceAgentList([next, ...S.agents.filter(item => item.id !== id)]);
         S.lastAgentFetch = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-        saveJson('agents', S.agents);
-        saveValue('laf', S.lastAgentFetch);
-        renderDropdown();
-        renderRecent();
-        updateInfo();
-        updateDiagnostics();
+        if (!options.deferCommit) commitWorkspaceAgentCatalog();
         log('Workspace agent captured', next);
         return true;
     }
 
     function getTextLabel(node) {
-        return String(node?.innerText || node?.textContent || '')
+        return String(node?.textContent || node?.innerText || '')
             .replace(/\s+/g, ' ')
             .trim()
             .slice(0, 80);
@@ -955,24 +1194,19 @@
         if (!isSupportedHost() || !document.body) return 0;
         let count = 0;
         const seen = new Set();
-        const selectors = [
-            'a[href*="/agents/a/"]',
-            '[href*="/agents/a/"]',
-            '[data-href*="/agents/a/"]'
-        ];
-        document.querySelectorAll(selectors.join(',')).forEach(node => {
+        document.querySelectorAll(AGENT_LINK_SELECTOR).forEach(node => {
             const href = node.getAttribute?.('href') || node.getAttribute?.('data-href') || '';
             const match = href.match(AGENT_PAGE_PATH_RE);
             if (!match || seen.has(match[1])) return;
             seen.add(match[1]);
             const label = getTextLabel(node) || getTextLabel(node.closest?.('li, [role="menuitem"], [role="treeitem"], [data-testid], div')) || match[1];
-            if (registerWorkspaceAgent({ id: match[1], name: label }, 'page')) count += 1;
+            if (registerWorkspaceAgent({ id: match[1], name: label }, 'page', { deferCommit: true })) count += 1;
         });
 
         const current = location.pathname.match(AGENT_PAGE_PATH_RE);
         if (current && !seen.has(current[1])) {
             const title = (document.title || '').replace(/\s*\|\s*ChatGPT.*$/i, '').trim();
-            if (registerWorkspaceAgent({ id: current[1], name: title || current[1] }, 'page')) count += 1;
+            if (registerWorkspaceAgent({ id: current[1], name: title || current[1] }, 'page', { deferCommit: true })) count += 1;
         }
         if (current) {
             const conversations = [...new Set([...document.querySelectorAll('a[href*="/c/"], [href*="/c/"], [data-href*="/c/"]')]
@@ -983,18 +1217,39 @@
                 name: getWorkspaceAgent(current[1])?.name || current[1],
                 conversations,
                 lastConversationId: conversations[0]
-            }, 'page')) count += 1;
+            }, 'page', { deferCommit: true })) count += 1;
         }
 
+        if (count) commitWorkspaceAgentCatalog();
         return count;
     }
 
     function scheduleWorkspaceAgentScan(delay = 800) {
+        if (document.hidden) return;
         if (agentScanTimer) window.clearTimeout(agentScanTimer);
+        if (isPanelMotionActive()) {
+            agentScanDeferred = true;
+            return;
+        }
         agentScanTimer = window.setTimeout(() => {
             agentScanTimer = 0;
+            if (isPanelMotionActive()) {
+                agentScanDeferred = true;
+                return;
+            }
             scanWorkspaceAgentsFromPage();
         }, delay);
+    }
+
+    function resumeDeferredUiWork() {
+        if (tokenRefreshDeferred) {
+            tokenRefreshDeferred = false;
+            scheduleTokenUpdate();
+        }
+        if (agentScanDeferred) {
+            agentScanDeferred = false;
+            scheduleWorkspaceAgentScan(250);
+        }
     }
 
     function getAgentIdFromValue(value) {
@@ -1163,8 +1418,9 @@
         });
         let count = 0;
         unique.forEach(agent => {
-            if (registerWorkspaceAgent(agent, source)) count += 1;
+            if (registerWorkspaceAgent(agent, source, { deferCommit: true })) count += 1;
         });
+        if (count) commitWorkspaceAgentCatalog();
         return count;
     }
 
@@ -1490,6 +1746,19 @@
         return input?.url || '';
     }
 
+    function getSameOriginUrl(value) {
+        try {
+            const parsed = new URL(String(value || ''), location.origin);
+            return parsed.origin === location.origin ? parsed : null;
+        } catch {
+            return null;
+        }
+    }
+
+    function isExactEndpointUrl(value, pathname) {
+        return getSameOriginUrl(value)?.pathname === pathname;
+    }
+
     function mergeHeaders(...sources) {
         const headers = new Headers();
         for (const source of sources.filter(Boolean)) {
@@ -1503,9 +1772,10 @@
     function getRelativeUrl(url) {
         try {
             const resolved = new URL(url, location.origin);
+            if (resolved.origin !== location.origin) return '';
             return `${resolved.pathname}${resolved.search}`;
         } catch {
-            return url;
+            return '';
         }
     }
 
@@ -1540,6 +1810,17 @@
         return index;
     }
 
+    function extractThinkingEffortIds(value) {
+        if (!Array.isArray(value)) return [];
+        return value.map(item => {
+            if (typeof item === 'string') return item;
+            if (item && typeof item === 'object') {
+                return item.thinking_effort || item.effort || item.id || item.value || '';
+            }
+            return '';
+        });
+    }
+
     function normalizeApiModels(payload) {
         const models = Array.isArray(payload) ? payload : payload?.models;
         const categoryIndex = buildCategoryIndex(Array.isArray(payload) ? [] : payload?.categories);
@@ -1550,24 +1831,32 @@
             if (slug) unique.set(slug, model);
         }
 
-        return [...unique.values()].map(model => ({
-            id: model.slug,
-            name: model.title || model.slug,
-            tokens: Number(model.max_tokens) > 0 ? Number(model.max_tokens) : 0,
-            desc: model.description || '',
-            tools: sanitizeStringList(model.enabled_tools || []),
-            reasoning: model.reasoning_type || '',
-            configurableEffort: Boolean(model.configurable_thinking_effort),
-            thinkingEfforts: sanitizeStringList(model.thinking_efforts || []),
-            category: categoryIndex.get(model.slug)?.category || '',
-            categoryName: categoryIndex.get(model.slug)?.human_category_name || '',
-            categoryLabel: categoryIndex.get(model.slug)?.human_category_short_name || '',
-            categoryLane: categoryIndex.get(model.slug)?.model_lane || '',
-            version: versionIndex.get(model.slug)?.id || categoryIndex.get(model.slug)?.model_version || '',
-            versionLabel: versionIndex.get(model.slug)?.display_text || '',
-            shortExplainer: categoryIndex.get(model.slug)?.short_explainer || '',
-            tagline: categoryIndex.get(model.slug)?.tagline || ''
-        })).sort(sortModelEntries);
+        return [...unique.values()].map(model => {
+            const category = categoryIndex.get(model.slug);
+            const version = versionIndex.get(model.slug);
+            return {
+                id: model.slug,
+                name: model.title || model.slug,
+                tokens: Number(model.max_tokens) > 0 ? Number(model.max_tokens) : 0,
+                desc: model.description || '',
+                tools: sanitizeStringList(model.enabled_tools || []),
+                reasoning: model.reasoning_type || '',
+                configurableEffort: Boolean(model.configurable_thinking_effort),
+                // API returns objects like { thinking_effort: "standard", ... }; keep only ids.
+                thinkingEfforts: sanitizeStringList(extractThinkingEffortIds(model.thinking_efforts)),
+                workMode: Boolean(model.is_work_mode_model),
+                deprecated: Boolean(category?.is_soft_deprecated),
+                deprecationDate: typeof category?.hard_deprecation_date === 'string' ? category.hard_deprecation_date : '',
+                category: category?.category || '',
+                categoryName: category?.human_category_name || '',
+                categoryLabel: category?.human_category_short_name || '',
+                categoryLane: category?.model_lane || '',
+                version: version?.id || category?.model_version || '',
+                versionLabel: version?.display_text || '',
+                shortExplainer: category?.short_explainer || '',
+                tagline: category?.tagline || ''
+            };
+        }).sort(sortModelEntries);
     }
 
     function ingestApiModels(payload, options = {}) {
@@ -1575,6 +1864,8 @@
         if (!normalized.length) return false;
 
         S.api = normalized;
+        liveApiModelIds.clear();
+        normalized.forEach(model => liveApiModelIds.add(model.id));
         S.lastFetch = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
         saveJson('api', S.api);
         saveValue('lf', S.lastFetch);
@@ -1584,7 +1875,7 @@
         renderRecent();
         updateInfo();
         updateModelLabel();
-        recalcTokens();
+        scheduleTokenUpdate();
         return true;
     }
 
@@ -1675,18 +1966,25 @@
 
     function getActiveComposerWorkspaceAgent() {
         try {
-            const inputs = [...document.querySelectorAll('[contenteditable="true"][role="textbox"], textarea')]
-                .filter(isVisibleElement)
-                .sort((a, b) => b.getBoundingClientRect().top - a.getBoundingClientRect().top);
-            const input = inputs[0];
+            const inputSelector = '[contenteditable="true"][role="textbox"], textarea';
+            const activeElement = document.activeElement;
+            let input = activeElement?.matches?.(inputSelector) && isVisibleElement(activeElement) ? activeElement : null;
+            if (!input) {
+                const inputs = document.querySelectorAll(inputSelector);
+                for (let index = inputs.length - 1; index >= 0; index -= 1) {
+                    if (isVisibleElement(inputs[index])) {
+                        input = inputs[index];
+                        break;
+                    }
+                }
+            }
             if (!input) return null;
 
             let root = input.closest('form') || input.parentElement;
             const roots = [];
             for (let i = 0; root && i < 8; i += 1, root = root.parentElement) {
                 roots.push(root);
-                const anchors = [...root.querySelectorAll('a[href*="/agents/a/"]')].filter(isVisibleElement);
-                const anchor = anchors[0];
+                const anchor = [...root.querySelectorAll('a[href*="/agents/a/"]')].find(isVisibleElement);
                 const match = anchor?.getAttribute('href')?.match(AGENT_PAGE_PATH_RE);
                 if (match?.[1]) {
                     return {
@@ -1706,7 +2004,7 @@
                 return knownAgents.find(agent => normalized.includes(agent.name)) || null;
             };
             for (const candidateRoot of roots) {
-                const text = (candidateRoot.innerText || candidateRoot.textContent || '').replace(/\s+/g, ' ').trim();
+                const text = (candidateRoot.textContent || candidateRoot.innerText || '').replace(/\s+/g, ' ').trim();
                 if (!text) continue;
                 const matched = findKnownAgentInText(text);
                 if (matched) {
@@ -1718,31 +2016,8 @@
                 }
             }
 
-            const inputRect = input.getBoundingClientRect();
-            const nearbyVisible = [...document.querySelectorAll('button, [role="button"], a, [data-testid], span, div')]
-                .filter(isVisibleElement)
-                .filter(element => {
-                    const rect = element.getBoundingClientRect();
-                    const verticalGap = Math.min(Math.abs(rect.bottom - inputRect.top), Math.abs(rect.top - inputRect.bottom));
-                    return rect.bottom >= inputRect.top - 90
-                        && rect.top <= inputRect.bottom + 24
-                        && rect.left <= inputRect.right + 40
-                        && rect.right >= inputRect.left - 40
-                        && verticalGap <= 90;
-                });
-            for (const element of nearbyVisible) {
-                const matched = findKnownAgentInText(element.innerText || element.textContent || '');
-                if (matched) {
-                    return {
-                        id: matched.id,
-                        name: matched.name,
-                        source: 'composer-nearby-text'
-                    };
-                }
-            }
-
             for (const candidateRoot of roots) {
-                const text = (candidateRoot.innerText || candidateRoot.textContent || '').replace(/\s+/g, ' ').trim();
+                const text = (candidateRoot.textContent || candidateRoot.innerText || '').replace(/\s+/g, ' ').trim();
                 const explicitAgentLabel = text.match(/([\u4e00-\u9fffA-Za-z0-9 _-]{2,80}(?:助手|Agent|agent|智能体))/);
                 if (explicitAgentLabel?.[1]) {
                     return {
@@ -1834,17 +2109,42 @@
     function sanitizeUrlForLog(url) {
         try {
             const parsed = new URL(String(url || ''), location.origin);
-            return `${parsed.pathname}${parsed.search}`;
+            return parsed.origin === location.origin ? parsed.pathname : '';
         } catch {
-            return String(url || '').slice(0, 240);
+            return '';
         }
     }
 
+    function sanitizeLogString(value) {
+        return String(value)
+            .replace(/\bagt_[a-z0-9_:-]+\b/gi, '[redacted-agent]')
+            .replace(/\b[0-9a-f]{8}-[0-9a-f-]{20,}\b/gi, '[redacted-id]')
+            .replace(/\b(custom_agent|composer_agent|conversation_agent_history)\s*[:=]\s*[^\s,;|]+/gi, '$1=[redacted]');
+    }
+
+    function sanitizeLogValue(value, depth = 0) {
+        if (depth > 5) return '[truncated]';
+        if (Array.isArray(value)) return value.slice(0, 40).map(item => sanitizeLogValue(item, depth + 1));
+        if (typeof value === 'string') return sanitizeLogString(value);
+        if (!value || typeof value !== 'object') return value;
+        const safe = {};
+        for (const [key, item] of Object.entries(value)) {
+            if (/authorization|cookie|session|device|account.?id|conversation.?id|agent.?id|agent.?name/i.test(key)) {
+                safe[key] = item ? '[redacted]' : item;
+                continue;
+            }
+            safe[key] = sanitizeLogValue(item, depth + 1);
+        }
+        return safe;
+    }
+
     function isConversationEndpointUrl(url) {
-        return /\/backend-api\/f\/conversation(?:\?|$)|\/backend-api\/conversation(?:\?|$)/.test(String(url || ''));
+        const parsed = getSameOriginUrl(url);
+        return Boolean(parsed && (parsed.pathname === '/backend-api/f/conversation' || parsed.pathname === '/backend-api/conversation'));
     }
 
     function appendPacketLog(kind, packet, extra = {}) {
+        if (!S.debug) return;
         try {
             const entry = {
                 kind,
@@ -1853,19 +2153,18 @@
                 page: sanitizeUrlForLog(location.href),
                 selected: S.model || '',
                 enabled: Boolean(S.on),
-                packet: packet || null,
-                extra: extra && typeof extra === 'object' ? extra : {}
+                packet: sanitizeLogValue(packet || null),
+                extra: sanitizeLogValue(extra && typeof extra === 'object' ? extra : {})
             };
             const next = [...readPacketLog(), entry].slice(-PACKET_LOG_LIMIT);
             writePacketLog(next);
-            document.documentElement.setAttribute('data-mi-packet-log-size', String(next.length));
         } catch (error) {
             log('Packet log write failed', { error: error?.message || String(error) });
         }
     }
 
     async function captureSentinelFinalize(input, init, url, response) {
-        if (!String(url || '').includes(SENTINEL_FINALIZE_ENDPOINT)) return;
+        if (!isExactEndpointUrl(url, SENTINEL_FINALIZE_ENDPOINT)) return;
         const bodyText = await getRequestBodyText(input, init);
         const payload = parseJsonMaybe(bodyText);
         const headerValue = response?.headers?.get?.('x-oai-is-update') || '';
@@ -1874,7 +2173,6 @@
             status: response?.status || 0,
             ok: Boolean(response?.ok),
             hasOaiIsUpdate: Boolean(headerValue),
-            oaiIsUpdatePrefix: headerValue ? headerValue.slice(0, 12) : '',
             oaiIsUpdateLength: headerValue.length || 0,
             requestKeys: payload && typeof payload === 'object' ? Object.keys(payload).slice(0, 40) : [],
             at: Date.now()
@@ -1895,6 +2193,7 @@
     }
 
     function exportPacketLog() {
+        if (!S.debug) return;
         try {
             const payload = {
                 build: SCRIPT_BUILD,
@@ -1902,7 +2201,7 @@
                 page: sanitizeUrlForLog(location.href),
                 selected: S.model || '',
                 enabled: Boolean(S.on),
-                currentDiagnostic: injectionDiagnostic,
+                currentDiagnostic: sanitizeLogValue(injectionDiagnostic),
                 entries: readPacketLog()
             };
             const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
@@ -1963,7 +2262,6 @@
             injectedModel: S.model,
             effortEnabled: S.effortOn,
             effortRequested: S.effort,
-            thinkingEffort: '',
             effortApplied: false,
             removedThinkingEffort: false
         };
@@ -2504,7 +2802,7 @@
     }
 
     async function captureCesStatsRequest(input, init, url, source = 'fetch') {
-        if (!String(url || '').includes(CES_STATS_ENDPOINT)) return;
+        if (!isExactEndpointUrl(url, CES_STATS_ENDPOINT)) return;
         let bodyText = await bodyToText(init?.body);
         if (!bodyText && input instanceof Request) {
             try { bodyText = await input.clone().text(); } catch (error) { log('Failed to read CES request body', error); }
@@ -2620,7 +2918,8 @@
     }
 
     function captureModelsRequest(input, init, url) {
-        if (!url.includes(MODELS_ENDPOINT)) return;
+        const parsedUrl = getSameOriginUrl(url);
+        if (parsedUrl?.pathname !== MODELS_ENDPOINT) return;
         const method = (init?.method || input?.method || 'GET').toUpperCase();
         if (method !== 'GET') return;
 
@@ -2634,20 +2933,14 @@
         if (!headers.has('x-openai-target-route')) headers.set('x-openai-target-route', MODELS_ENDPOINT);
         if (!headers.has('oai-language')) headers.set('oai-language', S.lang || document.documentElement.lang || navigator.language || 'en-US');
 
+        const requestUrl = new URL(MODELS_ENDPOINT, location.origin);
+        for (const key of ['iim', 'is_gizmo']) {
+            if (parsedUrl.searchParams.has(key)) requestUrl.searchParams.set(key, parsedUrl.searchParams.get(key));
+        }
         modelsRequestSnapshot = {
-            url: getRelativeUrl(url),
+            url: getRelativeUrl(requestUrl.href),
             headers: [...headers.entries()]
         };
-    }
-
-    function captureBackendRequestHeaders(input, init, url) {
-        if (!/\/backend-api\//.test(url || '')) return;
-        const headers = pickHeaders(
-            mergeHeaders(input instanceof Request ? input.headers : null, init?.headers),
-            MODELS_REQUEST_HEADER_ALLOWLIST
-        );
-        if (!headers.size) return;
-        backendRequestHeadersSnapshot = [...headers.entries()];
     }
 
     function buildModelsRequestConfig() {
@@ -2657,7 +2950,7 @@
         if (!requestUrl.searchParams.has('iim')) requestUrl.searchParams.set('iim', 'false');
         if (!requestUrl.searchParams.has('is_gizmo')) requestUrl.searchParams.set('is_gizmo', String(isGizmo));
 
-        const headers = new Headers(backendRequestHeadersSnapshot || []);
+        const headers = new Headers();
         if (modelsRequestSnapshot?.headers) {
             new Headers(modelsRequestSnapshot.headers).forEach((value, key) => headers.set(key, value));
         }
@@ -2674,8 +2967,7 @@
         if (!nativeFetch || !button || !isSupportedHost()) return;
 
         scanWorkspaceAgentsFromPage();
-        const usingCachedHeaders = !modelsRequestSnapshot && Boolean(backendRequestHeadersSnapshot?.length);
-        setModelSyncStatus(usingCachedHeaders ? 'cached' : 'syncing');
+        setModelSyncStatus('syncing');
         try {
             const request = buildModelsRequestConfig();
             const response = await nativeFetch(request.url, {
@@ -2702,71 +2994,69 @@
         }
     }
 
-    function captureAccountInfo(response) {
-        if (!window.MI_CONFIG?.advanced?.fetchAccountInfo) return;
-        response.clone().json().then(data => {
-            window.__MI_ACCOUNT_INFO = {
-                accountPlan: data?.account_plan?.plan_type || 'Unknown',
-                hasPaymentMethod: Boolean(data?.account_plan?.has_payment_method),
-                features: data?.features || [],
-                accountId: data?.accounts?.default?.id || 'Unknown'
-            };
-        }).catch(() => {});
-    }
-
     function installFetchHook() {
         if (hookInstalled || !nativeFetch) return;
         hookInstalled = true;
 
         wrappedFetch = async function (input, init) {
+            let url = '';
+            let rewritten = null;
+            let requestArgs = [input, init];
+            let isModelsRequest = false;
+            let isSentinelRequest = false;
+
             try {
-                const url = getFetchUrl(input);
+                url = getFetchUrl(input);
                 captureCesStatsRequest(input, init, url, 'fetch').catch(error => log('CES fetch capture failed', error));
-                captureBackendRequestHeaders(input, init, url);
                 captureConversationRequestPacket(input, init, url, 'before-rewrite').catch(error => log('Conversation request capture failed', error));
 
-                if (url.includes(MODELS_ENDPOINT)) {
+                isModelsRequest = isExactEndpointUrl(url, MODELS_ENDPOINT);
+                isSentinelRequest = isExactEndpointUrl(url, SENTINEL_FINALIZE_ENDPOINT);
+                if (isModelsRequest) {
                     captureModelsRequest(input, init, url);
-                    const response = await nativeFetch(input, init);
+                } else if (!isSentinelRequest) {
+                    rewritten = await rewriteConversationRequest(input, init, url);
+                    if (rewritten && !rewritten.blocked) requestArgs = rewritten.args;
+                }
+            } catch (error) {
+                injectionDiagnostic.error = error?.message || String(error);
+                updateDiagnostics();
+                log('Fetch preprocessing failed; request left untouched', error);
+                rewritten = null;
+                requestArgs = [input, init];
+            }
+
+            let response;
+            try {
+                response = await nativeFetch(...requestArgs);
+            } catch (error) {
+                injectionDiagnostic.error = error?.message || String(error);
+                updateDiagnostics();
+                log('Fetch request failed', error);
+                throw error;
+            }
+
+            try {
+                if (isModelsRequest) {
+                    if (response.status === 401 || response.status === 403) modelsRequestSnapshot = null;
                     response.clone().json().then(data => ingestApiModels(data, { fromHook: true })).catch(() => {});
-                    return response;
                 }
-
-                if (url.includes(ACCOUNT_ENDPOINT)) {
-                    const response = await nativeFetch(input, init);
-                    captureAccountInfo(response);
-                    return response;
-                }
-
-                if (url.includes(SENTINEL_FINALIZE_ENDPOINT)) {
-                    const response = await nativeFetch(input, init);
+                if (isSentinelRequest) {
                     captureSentinelFinalize(input, init, url, response).catch(error => log('Sentinel finalize capture failed', error));
-                    return response;
                 }
-
-                const rewritten = await rewriteConversationRequest(input, init, url);
-                if (rewritten) {
-                    if (rewritten.blocked) return nativeFetch(input, init);
-                    const response = await nativeFetch(...rewritten.args);
-                    observeWorkspaceAgentResponse(url, response);
+                observeWorkspaceAgentResponse(url, response);
+                if (rewritten && !rewritten.blocked) {
                     observeRewriteResponse(response, rewritten.diagnostic).catch(error => {
                         updateRewriteFailure(rewritten.diagnostic, error?.message || String(error));
                         log('Rewrite response observer failed', error);
                     });
-                    return response;
+                } else {
+                    observeConversationStreamResponse(url, response);
                 }
-
-                const response = await nativeFetch(input, init);
-                observeWorkspaceAgentResponse(url, response);
-                observeConversationStreamResponse(url, response);
-                return response;
             } catch (error) {
-                injectionDiagnostic.error = error?.message || String(error);
-                updateDiagnostics();
-                log('Fetch hook failed', error);
+                log('Fetch response observer failed', error);
             }
-
-            return nativeFetch(input, init);
+            return response;
         };
         window.fetch = wrappedFetch;
 
@@ -2829,6 +3119,7 @@
 
         if (fetchHookKeepalive) window.clearInterval(fetchHookKeepalive);
         fetchHookKeepalive = window.setInterval(() => {
+            if (document.hidden) return;
             try {
                 if (wrappedFetch && window.fetch !== wrappedFetch) {
                     window.fetch = wrappedFetch;
@@ -2849,36 +3140,33 @@
             } catch (error) {
                 log('Fetch hook keepalive failed', error);
             }
-        }, 1500);
+        }, 3000);
     }
 
     function applyTheme() {
         if (!host) return;
         host.style.setProperty('--mi-bg', S.bgColor);
         host.style.setProperty('--mi-bg-rgb', hexToRgb(S.bgColor));
+        host.style.setProperty('--mi-on-accent', getReadableAccentText(S.bgColor));
     }
 
     function updateBackdrop() {
-        const open = q('mi-p')?.classList.contains('show') || q('mi-set')?.classList.contains('show');
+        const panel = q('mi-p');
+        const open = Boolean(panel?.classList.contains('show') && !panel.classList.contains('is-closing'));
         const backdrop = q('mi-backdrop');
         if (!backdrop) return;
         backdrop.classList.toggle('show', Boolean(open));
-        if (!open) backdrop.classList.add('hiding');
-        else backdrop.classList.remove('hiding');
     }
 
     function closeDropdown(animate = true) {
         const wrap = q('mi-sel-wrap');
         const drop = q('mi-drop');
+        q('mi-sel-btn')?.setAttribute('aria-expanded', 'false');
         if (!wrap || !drop || !drop.classList.contains('show')) return;
         wrap.classList.remove('open');
-        if (!animate) {
-            drop.classList.remove('show', 'hiding');
-            return;
-        }
-        drop.classList.add('hiding');
         drop.classList.remove('show');
-        window.setTimeout(() => drop.classList.remove('hiding'), 180);
+        drop.setAttribute('aria-hidden', 'true');
+        if (!animate) drop.getAnimations?.().forEach(animation => animation.finish());
     }
 
     function focusMenuSearch() {
@@ -2889,20 +3177,120 @@
         search.setSelectionRange(pos, pos);
     }
 
+    function positionDropdown() {
+        const panel = q('mi-p');
+        const button = q('mi-sel-btn');
+        const drop = q('mi-drop');
+        if (!panel || !button || !drop) return;
+        const panelRect = panel.getBoundingClientRect();
+        const buttonRect = button.getBoundingClientRect();
+        const gap = 8;
+        const edge = 10;
+        const desiredHeight = Math.min(520, Math.floor(window.innerHeight * 0.58));
+        const spaceBelow = Math.max(0, panelRect.bottom - buttonRect.bottom - gap - edge);
+        const spaceAbove = Math.max(0, buttonRect.top - panelRect.top - gap - edge);
+        const overlay = Math.max(spaceAbove, spaceBelow) < 96;
+        if (overlay) {
+            const overlayHeight = Math.max(0, panelRect.height - (edge * 2));
+            drop.style.left = `${edge}px`;
+            drop.style.width = `${Math.max(0, Math.round(panelRect.width - (edge * 2)))}px`;
+            drop.style.right = 'auto';
+            drop.style.top = `${edge}px`;
+            drop.style.bottom = 'auto';
+            drop.style.maxHeight = `${Math.round(overlayHeight)}px`;
+            drop.dataset.compact = 'true';
+            drop.dataset.placement = 'overlay';
+            drop.style.transformOrigin = 'center center';
+            return;
+        }
+        const placeAbove = spaceAbove > spaceBelow;
+        const maxHeight = Math.min(desiredHeight, Math.max(96, placeAbove ? spaceAbove : spaceBelow));
+        drop.style.left = `${Math.round(buttonRect.left - panelRect.left)}px`;
+        drop.style.width = `${Math.round(buttonRect.width)}px`;
+        drop.style.right = 'auto';
+        drop.style.maxHeight = `${Math.round(maxHeight)}px`;
+        drop.dataset.compact = maxHeight < 190 ? 'true' : 'false';
+        drop.dataset.placement = placeAbove ? 'above' : 'below';
+        drop.style.transformOrigin = placeAbove ? 'bottom center' : 'top center';
+        if (placeAbove) {
+            drop.style.top = 'auto';
+            drop.style.bottom = `${Math.round(panelRect.bottom - buttonRect.top + gap)}px`;
+        } else {
+            drop.style.top = `${Math.round(buttonRect.bottom - panelRect.top + gap)}px`;
+            drop.style.bottom = 'auto';
+        }
+    }
+
     function openDropdown(focusSearch = false) {
         scanWorkspaceAgentsFromPage();
-        renderDropdown();
+        renderDropdown({ force: true });
         q('mi-sel-wrap')?.classList.add('open');
-        q('mi-drop')?.classList.remove('hiding');
+        positionDropdown();
         q('mi-drop')?.classList.add('show');
+        q('mi-drop')?.setAttribute('aria-hidden', 'false');
+        q('mi-sel-btn')?.setAttribute('aria-expanded', 'true');
+        if (isSupportedHost() && S.api.length && !liveApiModelIds.size && !liveCatalogSyncAttempted) {
+            liveCatalogSyncAttempted = true;
+            fetchModels();
+        }
         if (focusSearch) requestAnimationFrame(focusMenuSearch);
+    }
+
+    function positionLanguageMenu() {
+        const panel = q('mi-p');
+        const trigger = q('mi-lang-trigger');
+        const menu = q('mi-lang-menu');
+        if (!panel || !trigger || !menu) return;
+
+        const panelRect = panel.getBoundingClientRect();
+        const triggerRect = trigger.getBoundingClientRect();
+        const gap = 8;
+        const edge = 10;
+        const naturalHeight = Math.max(112, menu.scrollHeight || 0);
+        const availablePanelHeight = Math.max(0, panelRect.height - (edge * 2));
+        const availablePanelWidth = Math.max(0, panelRect.width - (edge * 2));
+        const menuWidth = Math.min(availablePanelWidth, Math.max(148, Math.round(triggerRect.width)));
+        const left = clamp(
+            triggerRect.left - panelRect.left,
+            edge,
+            Math.max(edge, panelRect.width - menuWidth - edge),
+        );
+        const spaceBelow = Math.max(0, panelRect.bottom - triggerRect.bottom - gap - edge);
+        const spaceAbove = Math.max(0, triggerRect.top - panelRect.top - gap - edge);
+        const overlay = Math.max(spaceAbove, spaceBelow) < Math.min(naturalHeight, 112);
+
+        menu.style.left = `${Math.round(left)}px`;
+        menu.style.right = 'auto';
+        menu.style.width = `${Math.round(menuWidth)}px`;
+        if (overlay) {
+            menu.style.top = `${edge}px`;
+            menu.style.bottom = 'auto';
+            menu.style.maxHeight = `${Math.round(availablePanelHeight)}px`;
+            menu.dataset.compact = 'true';
+            menu.dataset.placement = 'overlay';
+            menu.style.transformOrigin = 'center center';
+            return;
+        }
+
+        const placeAbove = spaceAbove >= naturalHeight
+            || (spaceBelow < naturalHeight && spaceAbove > spaceBelow);
+        const maxHeight = Math.min(naturalHeight, placeAbove ? spaceAbove : spaceBelow);
+        menu.style.maxHeight = `${Math.round(maxHeight)}px`;
+        menu.dataset.compact = maxHeight < naturalHeight ? 'true' : 'false';
+        menu.dataset.placement = placeAbove ? 'above' : 'below';
+        menu.style.transformOrigin = placeAbove ? 'bottom right' : 'top right';
+        if (placeAbove) {
+            menu.style.top = 'auto';
+            menu.style.bottom = `${Math.round(panelRect.bottom - triggerRect.top + gap)}px`;
+        } else {
+            menu.style.top = `${Math.round(triggerRect.bottom - panelRect.top + gap)}px`;
+            menu.style.bottom = 'auto';
+        }
     }
 
     function openWorkspaceAgentQuickMenu() {
         modelMenuQuery = '/';
         modelMenuAgentOnly = true;
-        scanWorkspaceAgentsFromPage();
-        renderDropdown();
         openDropdown(true);
     }
 
@@ -2929,7 +3317,11 @@
         const x = parseInt(host.style.left || '', 10);
         const y = parseInt(host.style.top || '', 10);
         if (Number.isFinite(x) && Number.isFinite(y)) {
-            setHostPosition(x, y, persist);
+            const maxX = window.innerWidth - BUTTON_SIZE - VIEW_MARGIN;
+            const maxY = window.innerHeight - BUTTON_SIZE - VIEW_MARGIN;
+            const nextX = clamp(Math.round(x), VIEW_MARGIN, maxX);
+            const nextY = clamp(Math.round(y), VIEW_MARGIN, maxY);
+            if (persist || nextX !== x || nextY !== y) setHostPosition(nextX, nextY, persist);
             return;
         }
 
@@ -2946,88 +3338,960 @@
         const button = q('mi-b');
         const hostRect = host.getBoundingClientRect();
         const anchorRect = button?.getBoundingClientRect() || hostRect;
-        const panelWidth = panel.offsetWidth || (panel.id === 'mi-set' ? 320 : 380);
-        const panelHeight = panel.offsetHeight || 420;
         const gap = 16;
         const viewportWidth = window.innerWidth;
         const viewportHeight = window.innerHeight;
+        const panelWidth = Math.max(0, Math.min(368, viewportWidth - (VIEW_MARGIN * 2)));
+        const desiredHeight = panel.dataset.view === 'settings' ? PANEL_SETTINGS_HEIGHT : PANEL_MAIN_HEIGHT;
+        const spaceAbove = Math.max(0, anchorRect.top - VIEW_MARGIN - gap);
+        const spaceBelow = Math.max(0, viewportHeight - anchorRect.bottom - VIEW_MARGIN - gap);
+        const detached = Math.max(spaceAbove, spaceBelow) < PANEL_MIN_SIDE_HEIGHT;
+        const placeAbove = !detached && (
+            spaceAbove >= desiredHeight
+            || (spaceBelow < desiredHeight && spaceAbove >= spaceBelow)
+        );
+        const availableHeight = detached
+            ? Math.min(desiredHeight, Math.max(0, viewportHeight - (VIEW_MARGIN * 2)))
+            : Math.min(desiredHeight, placeAbove ? spaceAbove : spaceBelow);
+        panel.style.setProperty('--mi-panel-available-height', `${Math.round(availableHeight)}px`);
+        const panelHeight = availableHeight;
 
         const targetLeft = clamp(anchorRect.right - panelWidth, VIEW_MARGIN, viewportWidth - panelWidth - VIEW_MARGIN);
-        let targetTop = anchorRect.top - panelHeight - gap;
-        let originY = `calc(100% + ${gap}px)`;
+        const targetTop = detached
+            ? VIEW_MARGIN
+            : placeAbove
+            ? anchorRect.top - panelHeight - gap
+            : anchorRect.bottom + gap;
+        const anchorCenterX = anchorRect.left + (anchorRect.width / 2);
+        const anchorCenterY = anchorRect.top + (anchorRect.height / 2);
+        const edgeInsetX = Math.min(28, panelWidth / 2);
+        const edgeInsetY = Math.min(28, panelHeight / 2);
+        const originX = clamp(
+            anchorCenterX - targetLeft,
+            edgeInsetX,
+            Math.max(edgeInsetX, panelWidth - edgeInsetX)
+        );
+        const originY = clamp(
+            anchorCenterY - targetTop,
+            edgeInsetY,
+            Math.max(edgeInsetY, panelHeight - edgeInsetY)
+        );
+        const shiftX = clamp(anchorCenterX - (targetLeft + originX), -56, 56);
+        const shiftY = clamp(anchorCenterY - (targetTop + originY), -72, 72);
 
-        if (targetTop < VIEW_MARGIN) {
-            targetTop = anchorRect.bottom + gap;
-            originY = `-${gap}px`;
-        }
-        targetTop = clamp(targetTop, VIEW_MARGIN, viewportHeight - panelHeight - VIEW_MARGIN);
-
-        const originX = clamp(anchorRect.left + (anchorRect.width / 2) - targetLeft, 24, panelWidth - 24);
         panel.style.left = `${Math.round(targetLeft - hostRect.left)}px`;
-        panel.style.top = `${Math.round(targetTop - hostRect.top)}px`;
         panel.style.right = 'auto';
-        panel.style.bottom = 'auto';
-        panel.style.transformOrigin = `${Math.round(originX)}px ${originY}`;
+        panel.style.transformOrigin = `${Math.round(originX)}px ${Math.round(originY)}px`;
+        panel.style.setProperty('--mi-panel-anchor-x', `${Math.round(originX)}px`);
+        panel.style.setProperty('--mi-panel-anchor-y', `${Math.round(originY)}px`);
+        panel.style.setProperty('--mi-panel-content-shift-y', detached
+            ? (shiftY < 0 ? '-8px' : '8px')
+            : placeAbove ? '8px' : '-8px');
+        panel.dataset.placement = detached ? 'detached' : placeAbove ? 'above' : 'below';
+        if (detached) {
+            panel.style.top = `${Math.round(VIEW_MARGIN - hostRect.top)}px`;
+            panel.style.bottom = 'auto';
+        } else if (placeAbove) {
+            const targetBottom = targetTop + panelHeight;
+            panel.style.top = 'auto';
+            panel.style.bottom = `${Math.round(hostRect.bottom - targetBottom)}px`;
+        } else {
+            panel.style.top = `${Math.round(targetTop - hostRect.top)}px`;
+            panel.style.bottom = 'auto';
+        }
+        return { originX, originY, shiftX, shiftY, width: panelWidth, height: panelHeight };
     }
 
-    function showPanel(panel) {
+    function setPanelView(view = 'main', focus = true) {
+        const panel = q('mi-p');
         if (!panel) return;
-        positionFloatingPanel(panel);
-        panel.classList.remove('hiding');
-        panel.classList.add('show');
-        if (panel.id === 'mi-p') q('mi-b')?.classList.add('panel-open');
-        q('mi-backdrop')?.classList.remove('hiding');
-        updateBackdrop();
+        const nextView = view === 'settings' ? 'settings' : 'main';
+        const mainView = q('mi-main-view');
+        const settingsView = q('mi-set');
+        panel.dataset.view = nextView;
+        panel.setAttribute('aria-labelledby', nextView === 'settings' ? 'mi-settings-title' : 'mi-panel-title');
+        mainView?.setAttribute('aria-hidden', nextView === 'main' ? 'false' : 'true');
+        settingsView?.setAttribute('aria-hidden', nextView === 'settings' ? 'false' : 'true');
+        mainView?.toggleAttribute('inert', nextView !== 'main');
+        settingsView?.toggleAttribute('inert', nextView !== 'settings');
+        if (panel.classList.contains('show') && !panel.classList.contains('is-motion-active')) {
+            invalidatePanelMotionLayout(panel);
+            requestAnimationFrame(() => {
+                if (panel.classList.contains('show') && !panel.classList.contains('is-closing')) {
+                    const geometry = preparePanelMotionLayout(panel);
+                    preparePanelMotionAnimation(panel, geometry, PANEL_MOTION_DURATION);
+                }
+            });
+        }
+        if (focus && panel.classList.contains('show')) {
+            schedulePanelFocus(nextView === 'settings' ? q('mi-set-close') : q('mi-sel-btn'));
+        }
     }
 
-    function hidePanel(panel, callback) {
-        if (!panel || !panel.classList.contains('show')) {
-            if (callback) callback();
+    function schedulePanelFocus(target) {
+        if (panelFocusFrame) cancelAnimationFrame(panelFocusFrame);
+        panelFocusFrame = requestAnimationFrame(() => {
+            panelFocusFrame = 0;
+            if (target?.isConnected) target.focus({ preventScroll: true });
+        });
+    }
+
+    function prefersReducedMotion() {
+        if (!reducedMotionQuery && typeof window.matchMedia === 'function') {
+            reducedMotionQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
+        }
+        return Boolean(reducedMotionQuery?.matches);
+    }
+
+    function getPanelMotionLayoutKey(panel = q('mi-p')) {
+        if (!panel || !host) return '';
+        return [
+            window.innerWidth,
+            window.innerHeight,
+            host.style.left,
+            host.style.top,
+            panel.dataset.view || 'main'
+        ].join(':');
+    }
+
+    function releasePanelMotionPrime(panel = q('mi-p')) {
+        if (panelMotionPrimeTimer) {
+            window.clearTimeout(panelMotionPrimeTimer);
+            panelMotionPrimeTimer = 0;
+        }
+        panel?.classList.remove('is-motion-primed');
+        q('mi-backdrop')?.classList.remove('is-motion-primed');
+    }
+
+    function cancelPanelFirstPaintIdleJob() {
+        if (!panelFirstPaintIdleJob) return;
+        if (!panelFirstPaintIdleUsesTimeout && typeof window.cancelIdleCallback === 'function') {
+            window.cancelIdleCallback(panelFirstPaintIdleJob);
+        } else {
+            window.clearTimeout(panelFirstPaintIdleJob);
+        }
+        panelFirstPaintIdleJob = 0;
+        panelFirstPaintIdleUsesTimeout = false;
+    }
+
+    function cancelPanelFirstPaintFrame() {
+        if (!panelFirstPaintFrame) return;
+        cancelAnimationFrame(panelFirstPaintFrame);
+        panelFirstPaintFrame = 0;
+    }
+
+    function queuePanelFirstPaintFrames(callback) {
+        cancelPanelFirstPaintFrame();
+        panelFirstPaintFrame = requestAnimationFrame(() => {
+            panelFirstPaintFrame = requestAnimationFrame(() => {
+                panelFirstPaintFrame = 0;
+                callback();
+            });
+        });
+    }
+
+    function resetPanelFirstPaintPreparation(panel = q('mi-p')) {
+        if (panelFirstPaintState === 'consumed') return;
+        panelFirstPaintGeneration += 1;
+        cancelPanelFirstPaintIdleJob();
+        cancelPanelFirstPaintFrame();
+        panel?.classList.remove('is-first-paint-warmup', 'is-first-paint-ready');
+        q('mi-backdrop')?.classList.remove('is-first-paint-warmup', 'is-first-paint-ready');
+        if (!panel?.classList.contains('is-motion-active')) panel?.classList.remove('is-motion-primed');
+        panelFirstPaintState = 'cold';
+    }
+
+    function beginPanelFirstPaintPreparation(panel = q('mi-p')) {
+        if (
+            !panel
+            || panelFirstPaintState !== 'cold'
+            || panel.classList.contains('show')
+            || document.hidden
+            || prefersReducedMotion()
+        ) return;
+
+        const geometry = preparePanelMotionLayout(panel);
+        const animation = preparePanelMotionAnimation(panel, geometry, PANEL_MOTION_DURATION);
+        if (!animation) {
+            panelFirstPaintState = 'consumed';
             return;
         }
-        panel.classList.add('hiding');
-        panel.classList.remove('show');
-        if (panel.id === 'mi-p') q('mi-b')?.classList.remove('panel-open');
-        updateBackdrop();
-        window.setTimeout(() => {
-            panel.classList.remove('hiding');
-            if (callback) callback();
-        }, panel.id === 'mi-p' ? 300 : 250);
+
+        const generation = ++panelFirstPaintGeneration;
+        const backdrop = q('mi-backdrop');
+        panelFirstPaintState = 'warming';
+        setPanelMotionCurrentTime(PANEL_MOTION_DURATION);
+        panel.classList.remove('is-first-paint-ready');
+        panel.classList.add('is-first-paint-warmup');
+        backdrop?.classList.remove('is-first-paint-ready');
+        backdrop?.classList.add('is-first-paint-warmup');
+        panel.getBoundingClientRect();
+
+        queuePanelFirstPaintFrames(() => {
+            if (generation !== panelFirstPaintGeneration || panelFirstPaintState !== 'warming') return;
+            panel.classList.add('is-motion-primed');
+            queuePanelFirstPaintFrames(() => {
+                if (generation !== panelFirstPaintGeneration || panelFirstPaintState !== 'warming') return;
+                setPanelMotionCurrentTime(0);
+                panel.classList.remove('is-first-paint-warmup');
+                panel.classList.add('is-first-paint-ready');
+                backdrop?.classList.remove('is-first-paint-warmup');
+                backdrop?.classList.add('is-first-paint-ready');
+                panelFirstPaintState = 'ready';
+            });
+        });
     }
 
-    function togglePanel(panel) {
+    function schedulePanelFirstPaintPreparation(panel = q('mi-p')) {
+        if (
+            !panel
+            || panelFirstPaintState !== 'cold'
+            || panel.classList.contains('show')
+            || document.hidden
+            || prefersReducedMotion()
+        ) return;
+        cancelPanelFirstPaintIdleJob();
+        const run = () => {
+            panelFirstPaintIdleJob = 0;
+            panelFirstPaintIdleUsesTimeout = false;
+            beginPanelFirstPaintPreparation(panel);
+        };
+        if (typeof window.requestIdleCallback === 'function') {
+            panelFirstPaintIdleUsesTimeout = false;
+            panelFirstPaintIdleJob = window.requestIdleCallback(run, { timeout: PANEL_FIRST_PAINT_IDLE_TIMEOUT });
+        } else {
+            panelFirstPaintIdleUsesTimeout = true;
+            panelFirstPaintIdleJob = window.setTimeout(run, 180);
+        }
+    }
+
+    function armPanelFirstPaintForInteraction(panel = q('mi-p')) {
+        if (!panel || panelFirstPaintState === 'consumed') return false;
+        cancelPanelFirstPaintIdleJob();
+        cancelPanelFirstPaintFrame();
+        panelFirstPaintGeneration += 1;
+        const hadPreparedLayer = panelFirstPaintState === 'ready' || panelFirstPaintState === 'warming';
+        if (panelFirstPaintState === 'warming') {
+            setPanelMotionCurrentTime(0);
+            panel.classList.remove('is-first-paint-warmup');
+            panel.classList.add('is-first-paint-ready', 'is-motion-primed');
+            q('mi-backdrop')?.classList.remove('is-first-paint-warmup');
+            q('mi-backdrop')?.classList.add('is-first-paint-ready', 'is-motion-primed');
+        }
+        if (hadPreparedLayer) panelFirstPaintState = 'ready';
+        return hadPreparedLayer;
+    }
+
+    function consumePanelFirstPaintPreparation(panel = q('mi-p')) {
+        if (!panel || panelFirstPaintState === 'consumed') return;
+        panelFirstPaintGeneration += 1;
+        cancelPanelFirstPaintIdleJob();
+        cancelPanelFirstPaintFrame();
+        panel.classList.remove('is-first-paint-warmup', 'is-first-paint-ready');
+        q('mi-backdrop')?.classList.remove('is-first-paint-warmup', 'is-first-paint-ready');
+        panelFirstPaintState = 'consumed';
+    }
+
+    function invalidatePanelMotionLayout(panel = q('mi-p')) {
+        resetPanelFirstPaintPreparation(panel);
+        panelMotionLayoutKey = '';
+        if (panelMotionPrimeFrame) {
+            cancelAnimationFrame(panelMotionPrimeFrame);
+            panelMotionPrimeFrame = 0;
+        }
+        releasePanelMotionPrime(panel);
+    }
+
+    function preparePanelMotionLayout(panel = q('mi-p')) {
+        if (!panel || !host) return panelMotionGeometry;
+        const currentKey = getPanelMotionLayoutKey(panel);
+        if (currentKey && currentKey === panelMotionLayoutKey) return panelMotionGeometry;
+        const geometry = positionFloatingPanel(panel);
+        if (geometry) panelMotionGeometry = geometry;
+        panelMotionLayoutKey = getPanelMotionLayoutKey(panel);
+        return panelMotionGeometry;
+    }
+
+    function primePanelMotion(panel = q('mi-p')) {
+        const geometry = preparePanelMotionLayout(panel);
+        preparePanelMotionAnimation(panel, geometry, panel?.classList.contains('show') ? PANEL_MOTION_DURATION : 0);
+        if (!prefersReducedMotion()) {
+            panel?.classList.add('is-motion-primed');
+            q('mi-backdrop')?.classList.add('is-motion-primed');
+            if (panelMotionPrimeTimer) window.clearTimeout(panelMotionPrimeTimer);
+            panelMotionPrimeTimer = window.setTimeout(() => {
+                panelMotionPrimeTimer = 0;
+                if (!panel?.classList.contains('show') && !panel?.classList.contains('is-motion-active')) {
+                    panel?.classList.remove('is-motion-primed');
+                    q('mi-backdrop')?.classList.remove('is-motion-primed');
+                }
+            }, PANEL_MOTION_PRIME_LEASE);
+        }
+        return geometry;
+    }
+
+    function schedulePanelMotionPreparation(panel = q('mi-p')) {
+        if (!panel || panel.classList.contains('show') || panelMotionPrimeFrame) return;
+        panelMotionPrimeFrame = requestAnimationFrame(() => {
+            panelMotionPrimeFrame = 0;
+            if (!panel.classList.contains('show')) {
+                const geometry = preparePanelMotionLayout(panel);
+                preparePanelMotionAnimation(panel, geometry, 0);
+            }
+        });
+    }
+
+    function getPanelMotionSpringResponse(time) {
+        const t = clamp(Number(time) || 0, 0, 1);
+        if (t >= 1) return 1;
+        // A critically-near, lightly bouncy response: quick out of the launcher,
+        // one restrained material overshoot, then a true zero-velocity settle.
+        const damping = 0.82;
+        const frequency = 10;
+        const dampedFrequency = frequency * Math.sqrt(1 - (damping * damping));
+        const envelope = Math.exp(-damping * frequency * t);
+        return 1 - envelope * (
+            Math.cos(dampedFrequency * t)
+            + ((damping * frequency) / dampedFrequency) * Math.sin(dampedFrequency * t)
+        );
+    }
+
+    function getPanelMotionProgress(time) {
+        return clamp(getPanelMotionSpringResponse(time), 0, 1);
+    }
+
+    function getPanelMotionElastic(time) {
+        const t = clamp(Number(time) || 0, 0, 1);
+        const overshoot = clamp((getPanelMotionSpringResponse(t) - 1) / 0.011, 0, 1);
+        const settleT = clamp((t - 0.92) / 0.08, 0, 1);
+        const settle = settleT * settleT * (3 - (2 * settleT));
+        return overshoot * (1 - settle);
+    }
+
+    function getPanelMotionMaterialPhases(time) {
+        const t = clamp(Number(time) || 0, 0, 1);
+        const smoothStep = value => {
+            const progress = clamp(Number(value) || 0, 0, 1);
+            return progress * progress * (3 - (2 * progress));
+        };
+        // Material time is intentionally slower than the position spring. The launcher
+        // snaps into place quickly, while the glass neck and shell finish unfolding later.
+        const neck = smoothStep(t / 0.22);
+        const body = smoothStep((t - 0.20) / 0.72);
+        const reveal = clamp((0.08 * neck) + (0.92 * body), 0, 1);
+        const content = smoothStep((t - 0.28) / 0.72);
+        return { neck, body, reveal, content };
+    }
+
+    function registerPanelMotionProperties() {
+        if (!window.CSS || typeof window.CSS.registerProperty !== 'function') return;
+        const properties = [
+            ['--mi-motion-bridge-opacity', '<number>', '0'],
+            ['--mi-motion-bridge-y', '<number>', '8'],
+            ['--mi-motion-bridge-scale', '<number>', '0.36'],
+            ['--mi-panel-bridge-opacity', '<number>', '0'],
+            ['--mi-panel-bridge-scale', '<number>', '0.68'],
+            ['--mi-panel-rim-opacity', '<number>', '0'],
+            ['--mi-panel-rim-scale', '<number>', '0.72']
+        ];
+        for (const [name, syntax, initialValue] of properties) {
+            try {
+                window.CSS.registerProperty({ name, syntax, inherits: true, initialValue });
+            } catch (_) {
+                // Registration is global and may already exist after a hot reload.
+            }
+        }
+    }
+
+    function getPanelMotionBridgeKeyframes(geometry = panelMotionGeometry) {
+        const panel = q('mi-p');
+        const placement = panel?.dataset.placement || 'above';
+        const shiftY = Number(geometry?.shiftY) || 0;
+        const revealFromTop = placement === 'below' || (placement === 'detached' && shiftY < 0);
+        const startY = revealFromTop ? -8 : 8;
+        const sampleCount = PANEL_MOTION_SAMPLE_COUNT;
+        const smoothStep = value => {
+            const t = clamp(Number(value) || 0, 0, 1);
+            return t * t * (3 - (2 * t));
+        };
+        const clean = value => Math.abs(value) < 0.0005 ? 0 : Number(value.toFixed(4));
+        const host = [];
+        const panelBridge = [];
+        for (let index = 0; index < sampleCount; index += 1) {
+            const offset = index / (sampleCount - 1);
+            const phases = getPanelMotionMaterialPhases(offset);
+            const rise = phases.neck;
+            const fade = 1 - smoothStep((offset - 0.32) / 0.46);
+            const bridgeOpacity = 0.30 * rise * fade;
+            const panelOpacity = 0.24 * rise * (1 - smoothStep((offset - 0.38) / 0.44));
+            host.push({
+                offset,
+                '--mi-motion-bridge-opacity': clean(bridgeOpacity),
+                '--mi-motion-bridge-y': clean(startY * (1 - rise)),
+                '--mi-motion-bridge-scale': clean(0.22 + (0.78 * rise))
+            });
+            panelBridge.push({
+                offset,
+                '--mi-panel-bridge-opacity': clean(panelOpacity),
+                '--mi-panel-bridge-scale': clean(0.54 + (0.46 * phases.neck))
+            });
+        }
+        return { host, panel: panelBridge };
+    }
+
+    function getPanelMotionKeyframes(geometry = panelMotionGeometry) {
+        const cleanPx = value => Math.abs(value) < 0.04 ? 0 : Number(value.toFixed(2));
+        const clean = value => Math.abs(value) < 0.0005 ? 0 : Number(value.toFixed(3));
+        const transform = (x, y, scaleX = 1, scaleY = 1) => [
+            'translate3d(', cleanPx(x), 'px, ', cleanPx(y), 'px, 0) scale3d(',
+            clean(scaleX), ', ', clean(scaleY), ', 1)'
+        ].join('');
+        const panel = q('mi-p');
+        const shiftX = Number(geometry?.shiftX) || 0;
+        const shiftY = Number(geometry?.shiftY) || 0;
+        const width = Math.max(1, Number(geometry?.width) || panel?.getBoundingClientRect().width || 368);
+        const height = Math.max(1, Number(geometry?.height) || panel?.getBoundingClientRect().height || 680);
+        const placement = panel?.dataset.placement || 'above';
+        const originX = clamp(Number(geometry?.originX) || (width - 28), 0, width);
+        const originY = clamp(Number(geometry?.originY) || (placement === 'below' ? 28 : height - 28), 0, height);
+        const detached = placement === 'detached';
+        const revealFromTop = placement === 'below' || (detached && shiftY < 0);
+        const neckHalfWidth = clamp(width * 0.05, 15, 20);
+        const anchorLeftInset = Math.max(0, originX - neckHalfWidth);
+        const anchorRightInset = Math.max(0, width - originX - neckHalfWidth);
+        const neckHeight = clamp(height * 0.06, 36, 48);
+        const smoothStep = value => {
+            const t = clamp(Number(value) || 0, 0, 1);
+            return t * t * (3 - (2 * t));
+        };
+        const clip = (visibleHeight, pinch = 0, radius = 22) => {
+            const safeVisibleHeight = clamp(visibleHeight, 0, height);
+            const revealProgress = safeVisibleHeight / height;
+            const hiddenY = Math.max(0, height - safeVisibleHeight);
+            const top = detached ? originY * (1 - revealProgress) : revealFromTop ? 0 : hiddenY;
+            const bottom = detached ? (height - originY) * (1 - revealProgress) : revealFromTop ? hiddenY : 0;
+            return [
+                'inset(', cleanPx(top), 'px ', cleanPx(anchorRightInset * pinch), 'px ',
+                cleanPx(bottom), 'px ', cleanPx(anchorLeftInset * pinch), 'px round ', cleanPx(radius), 'px)'
+            ].join('');
+        };
+        const overshootX = shiftX === 0 ? 0 : -Math.sign(shiftX) * 0.95;
+        const overshootY = shiftY === 0 ? (revealFromTop ? 1.2 : -1.2) : -Math.sign(shiftY) * 1.8;
+        const sampleCount = PANEL_MOTION_SAMPLE_COUNT;
+        return Array.from({ length: sampleCount }, (_, index) => {
+            const offset = index / (sampleCount - 1);
+            const progress = getPanelMotionProgress(offset);
+            const phases = getPanelMotionMaterialPhases(offset);
+            const inverse = 1 - progress;
+            const elastic = getPanelMotionElastic(offset);
+            const shellReveal = phases.reveal;
+            const visibleProgress = clamp(Math.pow(shellReveal, 1.18) + (0.018 * elastic), 0, 1);
+            const visibleHeight = neckHeight + ((height - neckHeight) * visibleProgress);
+            const pinch = clamp(0.94 * Math.pow(1 - shellReveal, 1.12) * (1 - (0.20 * elastic)), 0, 1);
+            const radius = 24 + (22 * Math.pow(1 - shellReveal, 0.58));
+            const opacity = clamp(0.004 + (0.996 * ((0.26 * phases.neck) + (0.74 * shellReveal))), 0, 1);
+            const rimFade = 1 - smoothStep((shellReveal - 0.18) / 0.62);
+            const rimOpacity = clamp((0.22 * phases.neck * rimFade) + (0.045 * elastic), 0, 1);
+            const rimScale = 0.72 + (0.28 * shellReveal) + (0.06 * elastic);
+            return {
+                offset,
+                opacity: Number(opacity.toFixed(4)),
+                '--mi-panel-rim-opacity': clean(rimOpacity),
+                '--mi-panel-rim-scale': clean(rimScale),
+                transform: transform(
+                    (shiftX * inverse) + (overshootX * elastic),
+                    (shiftY * inverse) + (overshootY * elastic),
+                    0.92 + (0.08 * shellReveal) + (0.012 * elastic),
+                    0.90 + (0.10 * shellReveal) + (0.016 * elastic)
+                ),
+                clipPath: clip(visibleHeight, pinch, radius)
+            };
+        });
+    }
+
+    function getPanelMotionAnimationKey(geometry = panelMotionGeometry) {
+        return [
+            panelMotionLayoutKey,
+            Number(geometry?.originX || 0).toFixed(2),
+            Number(geometry?.originY || 0).toFixed(2),
+            Number(geometry?.width || 0).toFixed(2),
+            Number(geometry?.height || 0).toFixed(2),
+            Number(geometry?.shiftX || 0).toFixed(2),
+            Number(geometry?.shiftY || 0).toFixed(2)
+        ].join('|');
+    }
+
+    function getPanelContentMotionKeyframes(geometry = panelMotionGeometry) {
+        const clean = value => Math.abs(value) < 0.001 ? 0 : Number(value.toFixed(3));
+        const cleanPx = value => Math.abs(value) < 0.04 ? 0 : Number(value.toFixed(2));
+        const shiftX = Number(geometry?.shiftX) || 0;
+        const shiftY = Number(geometry?.shiftY) || 0;
+        const width = Math.max(1, Number(geometry?.width) || 368);
+        const height = Math.max(1, Number(geometry?.height) || 680);
+        const panel = q('mi-p');
+        const placement = panel?.dataset.placement || 'above';
+        const detached = placement === 'detached';
+        const revealFromTop = placement === 'below' || (detached && shiftY < 0);
+        const originX = clamp(Number(geometry?.originX) || (width - 28), 0, width);
+        const originY = clamp(Number(geometry?.originY) || (placement === 'below' ? 28 : height - 28), 0, height);
+        const neckHalfWidth = clamp(width * 0.05, 15, 20);
+        const anchorLeftInset = Math.max(0, originX - neckHalfWidth);
+        const anchorRightInset = Math.max(0, width - originX - neckHalfWidth);
+        const clip = (visibleHeight, pinch = 0, radius = 20) => {
+            const safeVisibleHeight = clamp(visibleHeight, 0, height);
+            const revealProgress = safeVisibleHeight / height;
+            const hiddenY = Math.max(0, height - safeVisibleHeight);
+            const top = detached ? originY * (1 - revealProgress) : revealFromTop ? 0 : hiddenY;
+            const bottom = detached ? (height - originY) * (1 - revealProgress) : revealFromTop ? hiddenY : 0;
+            return [
+                'inset(', cleanPx(top), 'px ', cleanPx(anchorRightInset * pinch), 'px ',
+                cleanPx(bottom), 'px ', cleanPx(anchorLeftInset * pinch), 'px round ', cleanPx(radius), 'px)'
+            ].join('');
+        };
+        const transform = (x, y, scaleX, scaleY) => [
+            'translate3d(', clean(x), 'px, ', clean(y), 'px, 0) scale3d(',
+            clean(scaleX), ', ', clean(scaleY), ', 1)'
+        ].join('');
+        const sampleCount = PANEL_MOTION_SAMPLE_COUNT;
+        const delay = PANEL_MOTION_CONTENT_DELAY;
+        return Array.from({ length: sampleCount }, (_, index) => {
+            const offset = index / (sampleCount - 1);
+            const contentTime = clamp((offset - delay) / (1 - delay), 0, 1);
+            const progress = getPanelMotionProgress(contentTime);
+            const phases = getPanelMotionMaterialPhases(contentTime);
+            const opacity = contentTime <= 0
+                ? 0
+                : 1 - Math.pow(1 - phases.content, 1.18);
+            const contentReveal = phases.content;
+            const visibleHeight = 18 + ((height - 18) * Math.pow(contentReveal, 0.92));
+            const pinch = 0.18 * Math.pow(1 - contentReveal, 1.08);
+            const radius = 20 + (7 * Math.pow(1 - contentReveal, 0.68));
+            return {
+                offset,
+                opacity: Number(opacity.toFixed(4)),
+                transform: transform(
+                    shiftX * 0.045 * (1 - progress),
+                    shiftY * 0.06 * (1 - progress),
+                    0.982 + (0.018 * phases.content),
+                    0.978 + (0.022 * phases.content)
+                ),
+                clipPath: clip(visibleHeight, pinch, radius)
+            };
+        });
+    }
+
+    function setPanelMotionCurrentTime(currentTime) {
+        for (const animation of [panelMotionAnimation, panelContentMotionAnimation, panelBridgeMotionAnimation, hostBridgeMotionAnimation]) {
+            if (!animation) continue;
+            animation.pause();
+            animation.currentTime = currentTime;
+        }
+    }
+
+    function preparePanelMotionAnimation(panel, geometry = panelMotionGeometry, initialTime = null) {
+        if (!panel || prefersReducedMotion() || typeof panel.animate !== 'function') return null;
+        const nextKey = getPanelMotionAnimationKey(geometry);
+        if (panelMotionAnimation && panelContentMotionAnimation && panelBridgeMotionAnimation && hostBridgeMotionAnimation && panelMotionAnimationKey === nextKey) {
+            return panelMotionAnimation;
+        }
+
+        if (panelMotionAnimation) {
+            panelMotionAnimation.onfinish = null;
+            panelMotionAnimation.oncancel = null;
+            panelMotionAnimation.cancel();
+        }
+        panelContentMotionAnimation?.cancel();
+        panelBridgeMotionAnimation?.cancel();
+        hostBridgeMotionAnimation?.cancel();
+
+        const animation = panel.animate(getPanelMotionKeyframes(geometry), {
+            duration: PANEL_MOTION_DURATION,
+            easing: 'linear',
+            fill: 'both'
+        });
+        const content = panel.querySelector('.mi-view-stack');
+        const contentAnimation = content?.animate(getPanelContentMotionKeyframes(geometry), {
+            duration: PANEL_MOTION_DURATION,
+            easing: 'linear',
+            fill: 'both'
+        }) || null;
+        const bridgeKeyframes = getPanelMotionBridgeKeyframes(geometry);
+        const panelBridgeAnimation = panel.animate(bridgeKeyframes.panel, {
+            duration: PANEL_MOTION_DURATION,
+            easing: 'linear',
+            fill: 'both'
+        });
+        const hostBridgeAnimation = host?.animate(bridgeKeyframes.host, {
+            duration: PANEL_MOTION_DURATION,
+            easing: 'linear',
+            fill: 'both'
+        }) || null;
+        panelMotionAnimation = animation;
+        panelContentMotionAnimation = contentAnimation;
+        panelBridgeMotionAnimation = panelBridgeAnimation;
+        hostBridgeMotionAnimation = hostBridgeAnimation;
+        const resolvedTime = Number.isFinite(initialTime)
+            ? initialTime
+            : panel.classList.contains('show') ? PANEL_MOTION_DURATION : 0;
+        setPanelMotionCurrentTime(resolvedTime);
+        panelMotionAnimationKey = nextKey;
+        panelMotionOpening = null;
+        return animation;
+    }
+
+    function clearPanelMotionAnimation(panel = q('mi-p'), finalOpen = false) {
+        panelMotionGeneration += 1;
+        const animation = panelMotionAnimation;
+        const contentAnimation = panelContentMotionAnimation;
+        const panelBridgeAnimation = panelBridgeMotionAnimation;
+        const hostBridgeAnimation = hostBridgeMotionAnimation;
+        panelMotionAnimation = null;
+        panelContentMotionAnimation = null;
+        panelBridgeMotionAnimation = null;
+        hostBridgeMotionAnimation = null;
+        panelMotionAnimationKey = '';
+        panelMotionOpening = null;
+        if (animation) {
+            animation.onfinish = null;
+            animation.oncancel = null;
+        }
+        releasePanelMotionPrime(panel);
+        panel?.classList.remove('is-opening', 'is-closing', 'is-motion-active');
+        q('mi-backdrop')?.classList.remove('is-motion-active');
+        if (finalOpen) panel?.classList.add('show');
+        else panel?.classList.remove('show');
+        animation?.cancel();
+        contentAnimation?.cancel();
+        panelBridgeAnimation?.cancel();
+        hostBridgeAnimation?.cancel();
+        resumeDeferredUiWork();
+    }
+
+    function completePanelMotion(panel, opening, generation) {
+        if (generation !== panelMotionGeneration || !panel) return;
+        const animation = panelMotionAnimation;
+        const contentAnimation = panelContentMotionAnimation;
+        const panelBridgeAnimation = panelBridgeMotionAnimation;
+        const hostBridgeAnimation = hostBridgeMotionAnimation;
+        panelMotionOpening = null;
+        if (animation) animation.onfinish = null;
+        releasePanelMotionPrime(panel);
+        panel.classList.remove('is-opening', 'is-closing', 'is-motion-active');
+        q('mi-backdrop')?.classList.remove('is-motion-active');
+        if (opening) {
+            panel.classList.add('show');
+        } else {
+            panelMotionAnimation = null;
+            panelContentMotionAnimation = null;
+            panelBridgeMotionAnimation = null;
+            hostBridgeMotionAnimation = null;
+            panelMotionAnimationKey = '';
+            panel.classList.remove('show');
+            setPanelView('main', false);
+            invalidatePanelMotionLayout(panel);
+            schedulePanelMotionPreparation(panel);
+            animation?.cancel();
+            contentAnimation?.cancel();
+            panelBridgeAnimation?.cancel();
+            hostBridgeAnimation?.cancel();
+        }
+        resumeDeferredUiWork();
+    }
+
+    function startPanelMotion(panel, opening, geometry = panelMotionGeometry) {
+        if (!panel) return false;
+        if (prefersReducedMotion() || typeof panel.animate !== 'function') {
+            clearPanelMotionAnimation(panel, opening);
+            return false;
+        }
+
+        if (panelMotionAnimation && panelMotionOpening === opening) return true;
+        const generation = ++panelMotionGeneration;
+        const expectedKey = getPanelMotionAnimationKey(geometry);
+        let animation = panelMotionAnimation;
+        const carriedTime = Number(panelMotionAnimation?.currentTime);
+        const initialTime = Number.isFinite(carriedTime)
+            ? clamp(carriedTime, 0, PANEL_MOTION_DURATION)
+            : opening ? 0 : PANEL_MOTION_DURATION;
+        if (!animation || !panelContentMotionAnimation || !panelBridgeMotionAnimation || !hostBridgeMotionAnimation || panelMotionAnimationKey !== expectedKey) {
+            // Preserve the exact interrupted frame when a geometry refresh requires
+            // rebuilding the WAAPI effects. This keeps reversal visually continuous.
+            animation = preparePanelMotionAnimation(panel, geometry, initialTime);
+        }
+        if (!animation) return false;
+
+        panelMotionOpening = opening;
+        panel.classList.toggle('is-opening', opening);
+        panel.classList.toggle('is-closing', !opening);
+        panel.classList.add('is-motion-active');
+        releasePanelMotionPrime(panel);
+        q('mi-backdrop')?.classList.add('is-motion-active');
+        animation.onfinish = () => completePanelMotion(panel, opening, generation);
+        const playbackRate = opening ? 1 : -PANEL_MOTION_CLOSE_RATE;
+        for (const motionAnimation of [animation, panelContentMotionAnimation, panelBridgeMotionAnimation, hostBridgeMotionAnimation]) {
+            if (!motionAnimation) continue;
+            if (typeof motionAnimation.updatePlaybackRate === 'function') {
+                motionAnimation.updatePlaybackRate(playbackRate);
+            } else {
+                motionAnimation.playbackRate = playbackRate;
+            }
+            motionAnimation.play();
+        }
+        return true;
+    }
+
+    function clearButtonMotion(button = q('mi-b'), preservePress = false) {
+        if (buttonPressTimer) {
+            window.clearTimeout(buttonPressTimer);
+            buttonPressTimer = 0;
+        }
+        if (buttonMotionTimer) {
+            window.clearTimeout(buttonMotionTimer);
+            buttonMotionTimer = 0;
+        }
+        if (panelFocusTimer) {
+            window.clearTimeout(panelFocusTimer);
+            panelFocusTimer = 0;
+        }
+        button?.classList.remove('is-closing', 'is-motion-active');
+        if (!preservePress) button?.classList.remove('panel-primed');
+    }
+
+    function setIconMotionTargets(button, cycle = iconMotionCycle) {
+        if (!button) return;
+        const safeCycle = Number.isFinite(cycle) ? Math.max(0, cycle) : 0;
+        button.style.setProperty('--mi-orbit-open-angle', `${(safeCycle * 360) + 224}deg`);
+        button.style.setProperty('--mi-core-open-angle', `${(-safeCycle * 360) - 202}deg`);
+        button.style.setProperty('--mi-orbit-close-angle', `${(safeCycle + 1) * 360}deg`);
+        button.style.setProperty('--mi-core-close-angle', `${-(safeCycle + 1) * 360}deg`);
+    }
+
+    function finishButtonMotion(button, generation, opening) {
+        if (generation !== panelToggleGeneration) return;
+        if (buttonPressTimer) {
+            window.clearTimeout(buttonPressTimer);
+            buttonPressTimer = 0;
+        }
+        if (buttonMotionTimer) {
+            window.clearTimeout(buttonMotionTimer);
+            buttonMotionTimer = 0;
+        }
+        button?.classList.remove('panel-primed', 'is-closing', 'is-motion-active');
+        if (!opening) {
+            iconMotionCycle = 0;
+            setIconMotionTargets(button, 0);
+        }
+    }
+
+    function beginButtonMotion(button, opening) {
+        const preservePress = Boolean(opening && button?.classList.contains('panel-primed'));
+        clearButtonMotion(button, preservePress);
+        const generation = ++panelToggleGeneration;
+        const reducedMotion = prefersReducedMotion();
+        if (opening) {
+            setIconMotionTargets(button, iconMotionCycle);
+        } else {
+            iconMotionCycle += 1;
+            setIconMotionTargets(button, iconMotionCycle - 1);
+        }
+
+        if (reducedMotion) {
+            button?.classList.remove('panel-primed', 'is-closing', 'is-motion-active');
+            if (!opening) {
+                iconMotionCycle = 0;
+                setIconMotionTargets(button, 0);
+            }
+            return { generation, reducedMotion };
+        }
+
+        button?.classList.add('is-motion-active');
+        if (opening) {
+            if (preservePress) {
+                buttonPressTimer = window.setTimeout(() => {
+                    if (generation !== panelToggleGeneration) return;
+                    buttonPressTimer = 0;
+                    button?.classList.remove('panel-primed');
+                }, 22);
+            }
+        } else {
+            button?.classList.remove('panel-primed');
+            button?.classList.add('is-closing');
+        }
+
+        buttonMotionTimer = window.setTimeout(
+            () => finishButtonMotion(button, generation, opening),
+            opening ? 620 : 380
+        );
+        return { generation, reducedMotion };
+    }
+
+    function schedulePanelOpenFocus(target, generation, reducedMotion) {
+        if (panelFocusTimer) window.clearTimeout(panelFocusTimer);
+        panelFocusTimer = window.setTimeout(() => {
+            panelFocusTimer = 0;
+            if (generation !== panelToggleGeneration || !q('mi-p')?.classList.contains('show')) return;
+            schedulePanelFocus(target);
+        }, reducedMotion ? 32 : 54);
+    }
+
+    function getPanelFocusables() {
+        const panel = q('mi-p');
+        if (!panel) return [];
+        const view = panel.dataset.view === 'settings' ? q('mi-set') : q('mi-main-view');
+        if (!view) return [];
+        const roots = [view];
+        if (q('mi-drop')?.classList.contains('show')) roots.push(q('mi-drop'));
+        if (q('mi-lang-menu')?.classList.contains('show')) roots.push(q('mi-lang-menu'));
+        return roots.flatMap(root => [...root.querySelectorAll('button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])')])
+            .filter(element => {
+                if (element.closest('[inert], [aria-hidden=true]')) return false;
+                const style = getComputedStyle(element);
+                return style.display !== 'none'
+                    && style.visibility !== 'hidden'
+                    && element.getClientRects().length > 0;
+            });
+    }
+
+    function trapPanelFocus(event) {
+        const panel = q('mi-p');
+        if (
+            event.key !== 'Tab'
+            || !panel?.classList.contains('show')
+            || panel.classList.contains('is-closing')
+            || panel.getAttribute('aria-hidden') === 'true'
+        ) return;
+        const focusables = getPanelFocusables();
+        if (!focusables.length) {
+            event.preventDefault();
+            q('mi-p')?.focus({ preventScroll: true });
+            return;
+        }
+        const first = focusables[0];
+        const last = focusables[focusables.length - 1];
+        if (!q('mi-p')?.contains(document.activeElement)) {
+            event.preventDefault();
+            (event.shiftKey ? last : first).focus();
+        } else if (event.shiftKey && document.activeElement === first) {
+            event.preventDefault();
+            last.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+            event.preventDefault();
+            first.focus();
+        }
+    }
+
+    function showPanel(panel = q('mi-p')) {
         if (!panel) return;
-        if (panel.classList.contains('show')) hidePanel(panel);
+        const reversingClose = panel.classList.contains('is-closing');
+        if (panel.classList.contains('show') && !reversingClose) return;
+        armPanelFirstPaintForInteraction(panel);
+        if (!reversingClose) {
+            lastFocusedElement = document.activeElement instanceof HTMLElement ? document.activeElement : q('mi-b');
+        }
+        panel.toggleAttribute('inert', false);
+        if (!reversingClose) setPanelView('main', false);
+        const geometry = panelMotionAnimation ? panelMotionGeometry : preparePanelMotionLayout(panel);
+        const button = q('mi-b');
+        const motion = beginButtonMotion(button, true);
+        panel.classList.add('show');
+        panel.setAttribute('aria-hidden', 'false');
+        button?.classList.add('panel-open');
+        button?.setAttribute('aria-expanded', 'true');
+        startPanelMotion(panel, true, geometry);
+        updateBackdrop();
+        consumePanelFirstPaintPreparation(panel);
+        schedulePanelOpenFocus(q('mi-sel-btn'), motion.generation, motion.reducedMotion);
+    }
+
+    function hidePanel(panel = q('mi-p'), options = {}) {
+        if (!panel || !panel.classList.contains('show')) return;
+        const immediate = Boolean(options?.immediate);
+        if (panel.classList.contains('is-closing') && !immediate) return;
+        closeDropdown(false);
+        q('mi-lang-picker')?.classList.remove('open');
+        q('mi-lang-menu')?.classList.remove('show');
+        q('mi-lang-trigger')?.setAttribute('aria-expanded', 'false');
+        q('mi-lang-menu')?.setAttribute('aria-hidden', 'true');
+        q('mi-lang-menu')?.toggleAttribute('inert', true);
+        const button = q('mi-b');
+        const focusTarget = lastFocusedElement?.isConnected && !panel.contains(lastFocusedElement)
+            ? lastFocusedElement
+            : button;
+        focusTarget?.focus({ preventScroll: true });
+        if (panel.contains(document.activeElement)) button?.focus({ preventScroll: true });
+        panel.toggleAttribute('inert', true);
+        if (immediate) {
+            clearButtonMotion(button);
+            iconMotionCycle = 0;
+            setIconMotionTargets(button, 0);
+        } else {
+            beginButtonMotion(button, false);
+        }
+        panel.setAttribute('aria-hidden', 'true');
+        button?.classList.remove('panel-open');
+        button?.setAttribute('aria-expanded', 'false');
+        let animated = false;
+        if (immediate) clearPanelMotionAnimation(panel, false);
+        else animated = startPanelMotion(panel, false, panelMotionGeometry);
+        if (!animated) {
+            setPanelView('main', false);
+            invalidatePanelMotionLayout(panel);
+            if (!immediate) schedulePanelMotionPreparation(panel);
+        }
+        updateBackdrop();
+    }
+
+    function togglePanel(panel = q('mi-p')) {
+        if (!panel) return;
+        if (panel.classList.contains('is-closing')) showPanel(panel);
+        else if (panel.classList.contains('show')) hidePanel(panel);
         else showPanel(panel);
     }
 
     function renderColors() {
         const container = q('mi-clrs');
         if (!container) return;
-        container.innerHTML = COLORS.map(color => `<button type="button" class="mi-clr ${color === S.bgColor ? 'active' : ''}" data-color="${color}" style="background:${color}" aria-label="${color}"></button>`).join('');
+        const focusIndex = Math.max(0, COLORS.indexOf(S.bgColor));
+        container.setAttribute('role', 'radiogroup');
+        container.setAttribute('aria-label', t('theme_color'));
+        container.innerHTML = COLORS.map((color, index) => `<button type="button" role="radio" aria-checked="${color === S.bgColor}" tabindex="${index === focusIndex ? 0 : -1}" class="mi-clr ${color === S.bgColor ? 'active' : ''}" data-color="${color}" style="background:${color}" aria-label="${color}"></button>`).join('');
     }
 
     function renderSponsorModule() {
         const slot = q('mi-sponsor-slot');
-        const sponsor = window.MI_CONFIG?.sponsor;
         if (!slot) return;
-        if (!sponsor?.enabled || !sponsor.href) {
-            slot.innerHTML = '';
-            return;
-        }
 
-        const target = sponsor.newTab === false ? '_self' : '_blank';
-        const rel = target === '_blank' ? 'noopener noreferrer' : '';
-        const label = sponsor.useI18nLabel === false ? (sponsor.label || t('support_dev')) : t('support_dev');
-        const title = sponsor.useI18nLabel === false ? (sponsor.title || label) : t('support_dev');
-        slot.innerHTML = `
-            <a class="mi-sponsor" href="${escapeHtml(sponsor.href)}" target="${target}" rel="${rel}" title="${escapeHtml(title)}">
-                <span class="mi-sponsor-icon">+</span>
-                <span class="mi-sponsor-text">${escapeHtml(label)}</span>
+        const repositoryLabel = t('view_repository');
+        const repositoryMarkup = `
+            <a class="mi-repo-link" href="${escapeHtml(PROJECT_REPOSITORY_URL)}" target="_blank" rel="noopener noreferrer" title="${escapeHtml(repositoryLabel)}" aria-label="${escapeHtml(repositoryLabel)}">
+                <svg class="mi-repo-icon" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+                    <path d="M5.25 3.5h6.5l3 3v10h-9.5z"></path>
+                    <path d="M11.75 3.5v3h3M7.5 10h5M7.5 13h5"></path>
+                </svg>
+                <span class="mi-repo-text">${escapeHtml(repositoryLabel)}</span>
             </a>
         `;
+        const sponsor = window.MI_CONFIG?.sponsor;
+        let safeHref = "";
+        try {
+            const parsed = new URL(String(sponsor?.href || ""));
+            if (parsed.protocol === 'https:') safeHref = parsed.href;
+        } catch {}
+        let sponsorMarkup = "";
+        if (sponsor?.enabled && safeHref) {
+            const target = sponsor.newTab === false ? '_self' : '_blank';
+            const rel = target === '_blank' ? 'noopener noreferrer' : '';
+            const label = sponsor.useI18nLabel === false ? (sponsor.label || t('support_dev')) : t('support_dev');
+            const title = sponsor.useI18nLabel === false ? (sponsor.title || label) : t('support_dev');
+            sponsorMarkup = `
+                <a class="mi-sponsor" href="${escapeHtml(safeHref)}" target="${target}" rel="${rel}" title="${escapeHtml(title)}">
+                    <span class="mi-sponsor-icon">+</span>
+                    <span class="mi-sponsor-text">${escapeHtml(label)}</span>
+                </a>
+            `;
+        }
+        slot.innerHTML = `${repositoryMarkup}${sponsorMarkup}`;
     }
-
     function renderLanguageOptions() {
         const current = q('mi-lang-current');
         const menu = q('mi-lang-menu');
@@ -3035,8 +4299,10 @@
 
         const currentLabel = LANGUAGE_OPTIONS.find(([value]) => value === S.lang)?.[1] || LANGUAGE_OPTIONS[0][1];
         current.textContent = currentLabel;
+        q('mi-lang-trigger')?.setAttribute('aria-label', `${t('language')}: ${currentLabel}`);
+        menu.setAttribute('aria-label', t('language'));
         menu.innerHTML = LANGUAGE_OPTIONS.map(([value, label]) => `
-            <button type="button" class="mi-lang-option ${value === S.lang ? 'active' : ''}" data-lang="${value}" role="option" aria-selected="${value === S.lang}">
+            <button type="button" class="mi-lang-option ${value === S.lang ? 'active' : ''}" data-lang="${value}" role="option" aria-selected="${value === S.lang}" tabindex="-1">
                 <span>${label}</span>
             </button>
         `).join('');
@@ -3197,74 +4463,11 @@
                 ? t('workspace_agent_pending')
                 : t('workspace_agent_detected'));
         return `${name} / ${safeStatus}`;
-        const labels = {
-            'zh-CN': {
-                hinted: '仅请求提示',
-                forced: '请求已注入',
-                ready: '请求已带 hint',
-                confirmed: 'Agent 已确认',
-                fallback: '普通模型回退',
-                detected: '已检测'
-            },
-            en: {
-                hinted: 'Hint only',
-                forced: 'Hint injected',
-                ready: 'Hint present',
-                confirmed: 'Agent confirmed',
-                fallback: 'Model fallback',
-                detected: 'Detected'
-            },
-            ja: {
-                hinted: 'ヒントのみ',
-                forced: 'ヒント注入済み',
-                ready: 'ヒントあり',
-                confirmed: 'Agent 確認済み',
-                fallback: '通常モデルへ回退',
-                detected: '検出済み'
-            },
-            ru: {
-                hinted: 'Только hint',
-                forced: 'Hint внедрен',
-                ready: 'Hint есть',
-                confirmed: 'Agent подтвержден',
-                fallback: 'Откат к модели',
-                detected: 'Обнаружен'
-            }
-        };
-        const statusKey = injectionDiagnostic.workspaceAgentStatus || 'detected';
-        const status = labels[S.lang]?.[statusKey]
-            || labels.en[statusKey]
-            || (statusKey === 'required'
-                ? t('workspace_agent_required')
-                : statusKey === 'pending'
-                ? t('workspace_agent_pending')
-                : t('workspace_agent_detected'));
-        return `${name} / ${status}`;
     }
 
     function publishDiagnosticSnapshot() {
-        try {
-            const snapshot = {
-                build: SCRIPT_BUILD,
-                selected: S.model || '',
-                enabled: Boolean(S.on),
-                debug: Boolean(S.debug),
-                currentUrl: location.pathname,
-                diagnostic: injectionDiagnostic,
-                packetLogSize: readPacketLog().length,
-                packetLogTail: readPacketLog().slice(-12),
-                selectedWorkspaceAgent: getSelectedWorkspaceAgent() || null,
-                agents: S.agents.map(agent => ({
-                    id: agent.id,
-                    name: agent.name,
-                    source: agent.source,
-                    lastConversationId: agent.lastConversationId || ''
-                })).slice(0, 12)
-            };
-            document.documentElement.setAttribute('data-mi-diagnostic', JSON.stringify(snapshot));
-        } catch (error) {
-            log('Diagnostic export failed', { error: error?.message || String(error) });
-        }
+        document.documentElement.removeAttribute('data-mi-diagnostic');
+        document.documentElement.removeAttribute('data-mi-packet-log-size');
     }
 
     function updateDiagnostics() {
@@ -3273,6 +4476,7 @@
 
         const diag = q('mi-diag');
         const toggle = q('mi-diag-toggle');
+        const panel = q('mi-diag-panel');
         const summary = q('mi-diag-summary');
         const title = q('mi-diag-title');
         const selectedKey = q('mi-diag-selected-k');
@@ -3300,6 +4504,10 @@
         if (toggle) {
             toggle.setAttribute('aria-expanded', S.diagOpen ? 'true' : 'false');
             toggle.setAttribute('title', S.diagOpen ? t('diagnostic_collapse') : t('diagnostic_expand'));
+        }
+        if (panel) {
+            panel.setAttribute('aria-hidden', S.diagOpen ? 'false' : 'true');
+            panel.toggleAttribute('inert', !S.diagOpen);
         }
         if (summary) {
             summary.textContent = getDiagnosticSummaryText();
@@ -3361,8 +4569,11 @@
     }
 
     function applyUiText() {
-        q('mi-b')?.setAttribute('title', 'Drag to move | Right click to pause');
-        document.documentElement.lang = S.lang;
+        if (q('mi-b')) {
+            q('mi-b').setAttribute('title', 'Open Model Injector · Drag to move · Right click to pause');
+            q('mi-b').setAttribute('aria-label', 'Open Model Injector');
+        }
+        host?.setAttribute('lang', S.lang);
         if (q('mi-model-label')) q('mi-model-label').textContent = t('default_model');
         if (q('mi-sel-btn')) q('mi-sel-btn').setAttribute('title', t('choose_model'));
         if (q('mi-sel-txt')) q('mi-sel-txt').textContent = `${t('choose_model')}...`;
@@ -3374,9 +4585,10 @@
         if (q('mi-cu')) q('mi-cu').placeholder = t('add_model');
         if (q('mi-add')) q('mi-add').setAttribute('title', t('add_model'));
 
-        const mainLabels = host.querySelectorAll('#mi-p .mi-lbl');
-        if (mainLabels[0]) mainLabels[0].innerHTML = `${t('title_enable')} <em>${t('subtitle_enable')}</em>`;
-        if (mainLabels[1]) mainLabels[1].innerHTML = `${t('title_effort')} <em>${t('subtitle_effort')}</em>`;
+        if (q('mi-enable-title')) q('mi-enable-title').textContent = t('title_enable');
+        if (q('mi-enable-subtitle')) q('mi-enable-subtitle').textContent = t('subtitle_enable');
+        if (q('mi-effort-title')) q('mi-effort-title').textContent = t('title_effort');
+        if (q('mi-effort-subtitle')) q('mi-effort-subtitle').textContent = t('subtitle_effort');
 
         const boxTitle = host.querySelector('.mi-box-head h4');
         if (boxTitle) boxTitle.innerHTML = `${t('title_context')} <span class="mi-badge">${t('auto_label')}</span>`;
@@ -3392,14 +4604,20 @@
         if (q('mi-btn-set')) q('mi-btn-set').textContent = t('settings');
         const setHead = host.querySelector('#mi-set .mi-set-head h4');
         if (setHead) setHead.textContent = t('settings');
-        if (q('mi-set-close')) q('mi-set-close').textContent = 'x';
+        if (q('mi-set-close')) q('mi-set-close').textContent = '\u2190';
+        if (q('mi-theme-label')) q('mi-theme-label').textContent = t('theme_color');
+        renderColors();
         const colorLabel = host.querySelector('#mi-set .mi-color-row label');
         if (colorLabel) colorLabel.textContent = t('custom_color');
         if (q('mi-lang-label')) q('mi-lang-label').textContent = t('language');
         const debugLabel = q('mi-debug-label');
         if (debugLabel) debugLabel.textContent = t('debug_mode');
+        if (q('mi-privacy-title')) q('mi-privacy-title').textContent = t('privacy_title');
+        if (q('mi-privacy-body')) q('mi-privacy-body').textContent = t('privacy_body');
+        if (q('mi-clear-diagnostics')) q('mi-clear-diagnostics').textContent = t('diagnostic_clear');
         if (q('mi-export-packets')) q('mi-export-packets').textContent = t('diagnostic_export');
         renderLanguageOptions();
+        renderSponsorModule();
         updateDiagnostics();
         setModelSyncStatus(modelSyncStatus);
     }
@@ -3407,55 +4625,76 @@
     function renderEffortGrid() {
         const container = q('mi-grid-eff');
         if (!container) return;
-        const meter = { light: 24, standard: 48, extended: 74, heavy: 100 };
-        const stopwatchMap = {
-            light: { progress: 18, hand: 'M11 11 L14.5 8.7', secondary: '', inner: false },
-            standard: { progress: 42, hand: 'M11 11 L15.1 11', secondary: '', inner: false },
-            extended: { progress: 68, hand: 'M11 11 L14.2 13.8', secondary: 'M11 11 L11 7.1', inner: true },
-            heavy: { progress: 90, hand: 'M11 11 L9.2 15.2', secondary: 'M11 11 L14.7 8.1', inner: true }
-        };
-        const renderStopwatch = (level) => {
-            const config = stopwatchMap[level];
-            return `
-                <svg class="mi-g-stopwatch" viewBox="0 0 22 22" aria-hidden="true">
-                    <path class="mi-g-cap" d="M8.7 1.9h4.6"></path>
-                    <path class="mi-g-stem" d="M11 2.1v2"></path>
-                    <circle class="mi-g-shell" cx="11" cy="11.2" r="7.2"></circle>
-                    <circle class="mi-g-progress" cx="11" cy="11.2" r="7.2" pathLength="100" stroke-dasharray="${config.progress} 100"></circle>
-                    ${config.inner ? '<circle class="mi-g-inner" cx="11" cy="11.2" r="3.2"></circle>' : ''}
-                    <path class="mi-g-hand" d="${config.hand}"></path>
-                    ${config.secondary ? `<path class="mi-g-hand-secondary" d="${config.secondary}"></path>` : ''}
-                    <path class="mi-g-center" d="M11 11.2 L11.01 11.2"></path>
-                </svg>
-            `;
-        };
-        container.innerHTML = EFFORTS.map(effort => `
-            <button class="mi-g-item ${S.effort === effort ? 'active' : ''}" ${S.effortOn ? '' : 'disabled'} data-e="${effort}">
-                <svg class="mi-g-frame-progress" viewBox="0 0 100 136" preserveAspectRatio="none" aria-hidden="true">
-                    <rect class="mi-g-frame-bg" x="2" y="2" width="96" height="132" rx="18" ry="18" pathLength="100"></rect>
-                    <rect class="mi-g-frame-fg" x="2" y="2" width="96" height="132" rx="18" ry="18" pathLength="100" stroke-dasharray="${meter[effort]} 100"></rect>
-                </svg>
-                <div class="mi-g-headline">
-                    <span class="mi-g-top">${effort.toUpperCase()}</span>
+        const selectedIndex = Math.max(0, EFFORTS.indexOf(S.effort));
+        container.setAttribute('role', 'radiogroup');
+        container.setAttribute('aria-label', t('title_effort'));
+        container.setAttribute('aria-disabled', S.effortOn ? 'false' : 'true');
+        if (!container.querySelector('.mi-effort-track')) {
+            container.innerHTML = `
+                <div class="mi-effort-track">
+                    <span class="mi-effort-lens" aria-hidden="true"><span class="mi-effort-lens-material"></span></span>
+                    ${EFFORTS.map(effort => `
+                        <button type="button" class="mi-g-item" role="radio" data-e="${effort}">
+                            <span class="mi-g-main"></span>
+                        </button>
+                    `).join('')}
                 </div>
-                <div class="mi-g-main">${t(`effort_${effort}`)}</div>
-                <div class="mi-g-sub">${t(`effort_${effort}_sub`)}</div>
-                <div class="mi-g-meter">
-                    <div class="mi-g-icon-wrap">${renderStopwatch(effort)}</div>
-                </div>
-            </button>
-        `).join('');
+                <p class="mi-effort-detail" id="mi-effort-detail"></p>`;
+        }
+
+        const track = container.querySelector('.mi-effort-track');
+        track?.style.setProperty('--mi-effort-index', String(selectedIndex));
+        track?.style.setProperty('--mi-effort-glass-x', `${(selectedIndex + 0.5) * 25}%`);
+        track?.classList.toggle('is-disabled', !S.effortOn);
+        container.querySelectorAll('.mi-g-item').forEach(option => {
+            const effort = option.dataset.e;
+            const selected = effort === S.effort;
+            option.classList.toggle('active', selected);
+            option.setAttribute('aria-checked', selected ? 'true' : 'false');
+            option.setAttribute('aria-describedby', 'mi-effort-detail');
+            option.tabIndex = selected && S.effortOn ? 0 : -1;
+            option.disabled = !S.effortOn;
+            const label = option.querySelector('.mi-g-main');
+            if (label) label.textContent = t(`effort_${effort}`);
+        });
+        const detail = container.querySelector('.mi-effort-detail');
+        if (detail) detail.textContent = t(`effort_${S.effort}_sub`);
     }
 
     function renderRecent() {
         const container = q('mi-chips');
         if (!container) return;
-        container.innerHTML = S.recent.map(id => `<div class="mi-chip ${S.model === id ? 'active' : ''}" data-id="${escapeHtml(id)}" title="${escapeHtml(id)}">${escapeHtml(truncate(getDisplayName(id), 18))}</div>`).join('');
+        container.innerHTML = S.recent.map(id => `<button type="button" class="mi-chip ${S.model === id ? 'active' : ''}" data-id="${escapeHtml(id)}" title="${escapeHtml(id)}" aria-pressed="${S.model === id}">${escapeHtml(truncate(getDisplayName(id), 18))}</button>`).join('');
     }
 
     function renderModelOption(id, name, entry) {
-        const meta = entry?.tokens ? `${fmtTok(entry.tokens)}` : '';
-        const label = MENU_LABELS[id] || name;
+        const badges = [];
+        if (entry?.tokens) badges.push(fmtTok(entry.tokens));
+        if (entry?.workMode) badges.push('WM');
+        if (entry?.deprecated) badges.push('↓');
+        const meta = badges.join(' · ');
+        const isOnlineCatalog = isLiveCatalogModel(id);
+        const onlineState = isOnlineCatalog
+            ? `<span class="mi-source-state" aria-label="${escapeHtml(t('online'))}"><span class="mi-source-dot" aria-hidden="true"></span><span>${escapeHtml(t('online'))}</span></span>`
+            : '';
+        const mappedVariant = String(MENU_LABELS[id] || '').trim();
+        const catalogVariant = String(entry?.categoryLabel || '').trim();
+        const variant = mappedVariant || catalogVariant;
+        const fullName = String(name || id).trim();
+        const suffixMatches = Boolean(variant)
+            && fullName.toLowerCase().endsWith(` ${variant.toLowerCase()}`);
+        const promoteVariant = Boolean(variant)
+            && variant.toLowerCase() !== fullName.toLowerCase()
+            && (Boolean(mappedVariant) || suffixMatches);
+        const title = promoteVariant ? variant : fullName;
+        const modelContext = promoteVariant
+            ? (suffixMatches ? fullName.slice(0, -variant.length).trim() : fullName)
+            : '';
+        const subParts = [modelContext];
+        if (entry?.tagline) subParts.push(entry.tagline);
+        else if (entry?.shortExplainer) subParts.push(entry.shortExplainer);
+        if (!subParts.some(Boolean) && id && id !== title) subParts.push(id);
+        const sub = subParts.filter(Boolean).join(' · ');
         const details = escapeHtml(JSON.stringify({
             id,
             name,
@@ -3464,16 +4703,20 @@
             tools: entry?.tools || [],
             reasoning: entry?.reasoning || '',
             versionLabel: entry?.versionLabel || '',
-            official: Boolean(entry)
+            workMode: Boolean(entry?.workMode),
+            deprecated: Boolean(entry?.deprecated),
+            deprecationDate: entry?.deprecationDate || '',
+            official: Boolean(entry),
+            online: isOnlineCatalog
         }));
-        return `<div class="mi-opt ${S.model === id ? 'active' : ''} ${entry ? 'official' : ''}" data-id="${escapeHtml(id)}" data-details="${details}">
+        return `<button type="button" role="option" tabindex="-1" aria-selected="${S.model === id}" class="mi-opt ${S.model === id ? 'active' : ''} ${entry ? 'official' : ''} ${isOnlineCatalog ? 'is-online' : ''} ${entry?.deprecated ? 'deprecated' : ''} ${entry?.workMode ? 'work-mode' : ''}" data-id="${escapeHtml(id)}" data-details="${details}">
             <div class="mi-opt-body">
-                <span class="txt">${escapeHtml(label)}</span>
-                <span class="sub">${escapeHtml(name)}</span>
+                <span class="mi-opt-title-row"><span class="txt">${escapeHtml(title)}</span>${onlineState}</span>
+                <span class="sub">${escapeHtml(sub)}</span>
             </div>
             <span class="meta">${escapeHtml(meta)}</span>
             <span class="mi-check" aria-hidden="true">&#10003;</span>
-        </div>`;
+        </button>`;
     }
 
     function renderWorkspaceAgentOption(agent) {
@@ -3488,35 +4731,38 @@
             official: true,
             agent: true
         }));
-        return `<div class="mi-opt mi-agent-opt ${S.model === id ? 'active' : ''} official" data-id="${escapeHtml(id)}" data-details="${details}">
+        return `<button type="button" role="option" tabindex="-1" aria-selected="${S.model === id}" class="mi-opt mi-agent-opt ${S.model === id ? 'active' : ''} official" data-id="${escapeHtml(id)}" data-details="${details}">
             <div class="mi-opt-body">
                 <span class="txt">${escapeHtml(agent.name || agent.id)}</span>
                 <span class="sub">${escapeHtml(agent.id)}</span>
             </div>
             <span class="meta">${escapeHtml(t('workspace_agent'))}</span>
             <span class="mi-check" aria-hidden="true">&#10003;</span>
-        </div>`;
+        </button>`;
     }
 
     function getMenuFilter() {
         const raw = String(modelMenuQuery || '').trim();
         const slash = raw.startsWith('/');
+        const query = slash ? raw.slice(1).trim() : raw;
         return {
             raw,
-            query: slash ? raw.slice(1).trim() : raw,
+            query,
+            terms: query.toLowerCase().split(/\s+/).filter(Boolean),
             agentOnly: modelMenuAgentOnly || slash
         };
     }
 
-    function menuMatches(values, query) {
-        const normalized = String(query || '').trim().toLowerCase();
-        if (!normalized) return true;
+    function menuMatches(values, terms) {
+        const needles = Array.isArray(terms)
+            ? terms
+            : String(terms || '').trim().toLowerCase().split(/\s+/).filter(Boolean);
+        if (!needles.length) return true;
         const haystack = values.filter(Boolean).join(' ').toLowerCase();
-        return normalized.split(/\s+/).filter(Boolean).every(part => haystack.includes(part));
+        return needles.every(part => haystack.includes(part));
     }
 
-    function renderMenuSearch() {
-        const filter = getMenuFilter();
+    function renderMenuSearch(filter = getMenuFilter()) {
         const hasValue = Boolean(filter.raw);
         return `<div class="mi-menu-search ${filter.agentOnly ? 'agent-mode' : ''} ${hasValue ? 'has-value' : ''}">
             <div class="mi-menu-search-head">
@@ -3524,7 +4770,7 @@
                 <span class="mi-menu-search-mode">${escapeHtml(filter.agentOnly ? t('search_agent_mode') : t('search_models'))}</span>
             </div>
             <div class="mi-menu-search-box">
-                <span class="mi-menu-search-icon" aria-hidden="true">⌕</span>
+                <span class="mi-menu-search-icon" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><circle cx="10.6" cy="10.6" r="5.7"></circle><path d="m15.1 15.1 4.2 4.2"></path></svg></span>
                 <input id="mi-menu-search" type="text" value="${escapeHtml(modelMenuQuery)}" placeholder="${escapeHtml(t('search_placeholder'))}" autocomplete="off" spellcheck="false">
                 <button class="mi-menu-search-clear" type="button" data-action="clear-search" title="${escapeHtml(t('search_clear'))}" aria-label="${escapeHtml(t('search_clear'))}">×</button>
             </div>
@@ -3532,11 +4778,40 @@
         </div>`;
     }
 
+    function syncMenuSearchUi(dropdown, filter) {
+        const searchWrap = dropdown.querySelector('.mi-menu-search');
+        const search = dropdown.querySelector('#mi-menu-search');
+        if (!searchWrap || !search) return false;
+
+        searchWrap.classList.toggle('agent-mode', filter.agentOnly);
+        searchWrap.classList.toggle('has-value', Boolean(filter.raw));
+        const title = searchWrap.querySelector('.mi-menu-search-title');
+        const mode = searchWrap.querySelector('.mi-menu-search-mode');
+        const clear = searchWrap.querySelector('[data-action=clear-search]');
+        const hint = searchWrap.querySelector('.mi-menu-search-hint');
+        if (title) title.textContent = t('search_quick_title');
+        if (mode) mode.textContent = t(filter.agentOnly ? 'search_agent_mode' : 'search_models');
+        if (search.value !== modelMenuQuery) search.value = modelMenuQuery;
+        search.placeholder = t('search_placeholder');
+        if (clear) {
+            clear.title = t('search_clear');
+            clear.setAttribute('aria-label', t('search_clear'));
+        }
+        if (hint) {
+            const label = t(filter.agentOnly ? 'section_workspace_agents' : 'search_models_hint');
+            const key = hint.querySelector('.mi-menu-key');
+            const textNode = key?.nextSibling;
+            if (textNode?.nodeType === Node.TEXT_NODE) textNode.nodeValue = label;
+            else hint.append(label);
+        }
+        return true;
+    }
+
     function renderEmptyMenuNotice() {
         return `<div class="mi-menu-empty">${escapeHtml(t('no_menu_results'))}</div>`;
     }
 
-    function renderDropdown() {
+    function renderDropdown(options = {}) {
         hideTooltip();
         const dropdown = q('mi-drop');
         const label = q('mi-sel-txt');
@@ -3545,27 +4820,30 @@
         const filter = getMenuFilter();
 
         if (label) {
-            label.textContent = getDisplayName(S.model);
+            const displayName = getDisplayName(S.model);
+            label.textContent = displayName;
             label.title = S.model || t('default_model');
+            q('mi-sel-btn')?.setAttribute('aria-label', `${t('choose_model')}: ${displayName}`);
         }
+        if (!options.force && !dropdown.classList.contains('show')) return;
 
         let visibleGroups = 0;
-        let html = renderMenuSearch();
+        let html = '';
 
-        if (!filter.agentOnly && menuMatches([t('default_model'), t('auto_label'), 'auto default'], filter.query)) {
+        if (!filter.agentOnly && menuMatches([t('default_model'), t('auto_label'), 'auto default'], filter.terms)) {
             visibleGroups += 1;
             html += `
             <div class="mi-menu-section">
                 <div class="mi-opt-grp">${escapeHtml(t('group_default'))}</div>
                 <div class="mi-family">
-                    <div class="mi-opt ${(!S.model || S.model === 'auto') ? 'active' : ''}" data-id="" title="${escapeHtml(t('default_model'))}">
+                    <button type="button" role="option" tabindex="-1" aria-selected="${!S.model || S.model === 'auto'}" class="mi-opt ${(!S.model || S.model === 'auto') ? 'active' : ''}" data-id="" title="${escapeHtml(t('default_model'))}">
                         <div class="mi-opt-body">
                             <span class="txt">${escapeHtml(t('default_model'))}</span>
                             <span class="sub">${escapeHtml(t('auto_label'))}</span>
                         </div>
                         <span class="meta"></span>
                         <span class="mi-check" aria-hidden="true">&#10003;</span>
-                    </div>
+                    </button>
                 </div>
             </div>
         `;
@@ -3581,6 +4859,7 @@
             if (!isHiddenModelId(item.id)) merged.set(item.id, { id: item.id, name: item.name || item.id, entry: item });
         });
 
+        const mergedItems = [...merged.values()];
         const remaining = new Set(merged.keys());
 
         const agentItems = [...S.agents];
@@ -3588,7 +4867,7 @@
         if (selectedAgentId && !agentItems.some(agent => agent.id === selectedAgentId)) {
             agentItems.unshift({ id: selectedAgentId, name: selectedAgentId, source: 'selected', skills: [], tools: [] });
         }
-        const visibleAgents = agentItems.filter(agent => menuMatches([agent.id, agent.name, agent.desc, agent.source, ...(agent.skills || []), ...(agent.tools || [])], filter.query));
+        const visibleAgents = agentItems.filter(agent => menuMatches([agent.id, agent.name, agent.desc, agent.source, ...(agent.skills || []), ...(agent.tools || [])], filter.terms));
         if (visibleAgents.length && filter.agentOnly) {
             visibleGroups += 1;
             html += `<div class="mi-menu-section mi-agent-section"><div class="mi-opt-grp">${escapeHtml(t('section_workspace_agents'))}</div><div class="mi-family">`;
@@ -3599,9 +4878,9 @@
         if (!filter.agentOnly) for (const section of MODEL_MENU_SECTIONS) {
             let sectionHtml = '';
             for (const [familyName, matcher] of section.families) {
-                const familyItems = [...merged.values()]
+                const familyItems = mergedItems
                     .filter(item => remaining.has(item.id) && matcher.test(item.id))
-                    .filter(item => menuMatches([item.id, item.name, MENU_LABELS[item.id], item.entry?.desc, item.entry?.reasoning, item.entry?.versionLabel], filter.query))
+                    .filter(item => menuMatches([item.id, item.name, MENU_LABELS[item.id], item.entry?.categoryLabel, item.entry?.desc, item.entry?.reasoning, item.entry?.versionLabel], filter.terms))
                     .sort((a, b) => ((PRESET_ORDER.get(a.id) ?? 999) - (PRESET_ORDER.get(b.id) ?? 999)) || sortModelEntries(a, b));
                 if (!familyItems.length) continue;
 
@@ -3616,9 +4895,9 @@
             }
         }
 
-        const discovered = [...merged.values()]
+        const discovered = mergedItems
             .filter(item => remaining.has(item.id))
-            .filter(item => !filter.agentOnly && menuMatches([item.id, item.name, item.entry?.desc, item.entry?.reasoning, item.entry?.versionLabel], filter.query))
+            .filter(item => !filter.agentOnly && menuMatches([item.id, item.name, item.entry?.desc, item.entry?.reasoning, item.entry?.versionLabel], filter.terms))
             .sort((a, b) => sortModelEntries(a, b));
         if (discovered.length) {
             visibleGroups += 1;
@@ -3629,18 +4908,24 @@
 
         const customItems = S.custom
             .filter(id => !isHiddenModelId(id))
-            .filter(id => !filter.agentOnly && menuMatches([id, t('custom_subtitle')], filter.query));
+            .filter(id => !filter.agentOnly && menuMatches([id, t('custom_subtitle')], filter.terms));
         if (customItems.length) {
             visibleGroups += 1;
             html += `<div class="mi-menu-section"><div class="mi-opt-grp">${escapeHtml(t('custom_group'))}</div><div class="mi-family">`;
             customItems.forEach(id => {
-                html += `<div class="mi-opt ${S.model === id ? 'active' : ''}" data-id="${escapeHtml(id)}" data-details="{}">
-                    <div class="mi-opt-body">
-                        <span class="txt">${escapeHtml(id)}</span>
-                        <span class="sub">${escapeHtml(t('custom_subtitle'))}</span>
-                    </div>
-                    <span class="meta"></span>
-                    <span class="mi-check" aria-hidden="true">&#10003;</span>
+                const deleteLabel = `${t('delete_custom_model')}: ${id}`;
+                html += `<div class="mi-custom-row" role="presentation">
+                    <button type="button" role="option" tabindex="-1" aria-selected="${S.model === id}" class="mi-opt mi-custom-opt ${S.model === id ? 'active' : ''}" data-id="${escapeHtml(id)}" data-custom="true" data-details="{}">
+                        <div class="mi-opt-body">
+                            <span class="txt">${escapeHtml(id)}</span>
+                            <span class="sub">${escapeHtml(t('custom_subtitle'))}</span>
+                        </div>
+                        <span class="meta"></span>
+                        <span class="mi-check" aria-hidden="true">&#10003;</span>
+                    </button>
+                    <button type="button" class="mi-custom-remove" data-action="remove-custom" data-id="${escapeHtml(id)}" title="${escapeHtml(deleteLabel)}" aria-label="${escapeHtml(deleteLabel)}">
+                        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M8.5 8.5v9m7-9v9M5.5 6h13M9 6l.8-2h4.4l.8 2m1.7 0-.7 14H8L7.3 6"></path></svg>
+                    </button>
                 </div>`;
             });
             html += `</div></div>`;
@@ -3654,10 +4939,19 @@
         }
 
         if (!visibleGroups) html += renderEmptyMenuNotice();
-        dropdown.innerHTML = html;
+        let optionsContainer = dropdown.querySelector('#mi-menu-options');
+        let rebuiltSearch = false;
+        if (!optionsContainer || !syncMenuSearchUi(dropdown, filter)) {
+            dropdown.innerHTML = `${renderMenuSearch(filter)}<div id="mi-menu-options" class="mi-menu-options" role="listbox" aria-label="${escapeHtml(t('choose_model'))}">${html}</div>`;
+            optionsContainer = dropdown.querySelector('#mi-menu-options');
+            rebuiltSearch = true;
+        } else {
+            optionsContainer.setAttribute('aria-label', t('choose_model'));
+            optionsContainer.innerHTML = html;
+        }
         bindTooltipEvents(dropdown);
         const search = dropdown.querySelector('#mi-menu-search');
-        if (search && keepSearchFocus) {
+        if (search && keepSearchFocus && rebuiltSearch) {
             requestAnimationFrame(() => {
                 search.focus();
                 const pos = search.value.length;
@@ -3667,12 +4961,18 @@
     }
 
     let tooltipEl = null;
-    let tooltipTimeout = null;
+    let tooltipShowTimer = 0;
+    let tooltipHideTimer = 0;
+    const tooltipBoundContainers = new WeakSet();
 
     function showTooltip(target, details) {
-        if (tooltipTimeout) {
-            clearTimeout(tooltipTimeout);
-            tooltipTimeout = null;
+        if (tooltipShowTimer) {
+            window.clearTimeout(tooltipShowTimer);
+            tooltipShowTimer = 0;
+        }
+        if (tooltipHideTimer) {
+            window.clearTimeout(tooltipHideTimer);
+            tooltipHideTimer = 0;
         }
         tooltipEl = getTooltipElement();
         tooltipEl.classList.remove('show', 'hiding');
@@ -3680,7 +4980,8 @@
         const d = typeof details === 'string' ? JSON.parse(details) : details;
         if (!d?.id) return;
 
-        let html = `<div class="mi-tooltip-title">${escapeHtml(d.name || d.id)}${d.official ? `<span class="mi-online-badge">${escapeHtml(d.agent ? t('workspace_agent_detected') : t('online'))}</span>` : ''}</div>`;
+        const statusLabel = d.agent ? t('workspace_agent_detected') : d.online ? t('online') : '';
+        let html = `<div class="mi-tooltip-title">${escapeHtml(d.name || d.id)}${statusLabel ? `<span class="mi-online-badge">${escapeHtml(statusLabel)}</span>` : ''}</div>`;
         html += `<div class="mi-tooltip-id">${escapeHtml(d.id)}</div>`;
         if (d.tokens) html += `<div class="mi-tooltip-row"><span class="k">${escapeHtml(t('tooltip_context'))}</span><span class="v">${fmtTok(d.tokens)} tokens</span></div>`;
         if (d.reasoning) html += `<div class="mi-tooltip-row"><span class="k">${escapeHtml(t('tooltip_reasoning'))}</span><span class="v">${escapeHtml(d.reasoning)}</span></div>`;
@@ -3725,11 +5026,17 @@
     }
 
     function hideTooltip() {
+        if (tooltipShowTimer) {
+            window.clearTimeout(tooltipShowTimer);
+            tooltipShowTimer = 0;
+        }
         tooltipEl = tooltipEl || document.querySelector('.mi-tooltip');
         if (!tooltipEl || !tooltipEl.classList.contains('show')) return;
         tooltipEl.classList.add('hiding');
         tooltipEl.classList.remove('show');
-        tooltipTimeout = window.setTimeout(() => {
+        if (tooltipHideTimer) window.clearTimeout(tooltipHideTimer);
+        tooltipHideTimer = window.setTimeout(() => {
+            tooltipHideTimer = 0;
             document.querySelectorAll('.mi-tooltip').forEach((node, index) => {
                 if (index === 0) node.classList.remove('hiding');
                 else node.remove();
@@ -3738,26 +5045,28 @@
     }
 
     function bindTooltipEvents(container) {
-        container.querySelectorAll('.mi-opt[data-details]').forEach(option => {
-            option.addEventListener('mouseenter', () => {
-                const details = option.getAttribute('data-details');
-                if (details && details !== '{}') tooltipTimeout = window.setTimeout(() => showTooltip(option, details), 150);
-            });
-            option.addEventListener('mouseleave', () => {
-                if (tooltipTimeout) {
-                    clearTimeout(tooltipTimeout);
-                    tooltipTimeout = null;
-                }
-                hideTooltip();
-            });
+        if (!container || tooltipBoundContainers.has(container)) return;
+        tooltipBoundContainers.add(container);
+        container.addEventListener('mouseover', event => {
+            const option = event.target.closest?.('.mi-opt[data-details]');
+            if (!option || !container.contains(option) || option.contains(event.relatedTarget)) return;
+            const details = option.getAttribute('data-details');
+            if (!details || details === '{}') return;
+            if (tooltipShowTimer) window.clearTimeout(tooltipShowTimer);
+            tooltipShowTimer = window.setTimeout(() => showTooltip(option, details), 150);
+        });
+        container.addEventListener('mouseout', event => {
+            const option = event.target.closest?.('.mi-opt[data-details]');
+            if (!option || !container.contains(option) || option.contains(event.relatedTarget)) return;
+            hideTooltip();
         });
     }
 
     function updateBadge() {
         const badge = q('mi-n');
         if (!badge) return;
-        const prevCount = parseInt(badge.innerText, 10) || 0;
-        badge.innerText = String(S.cnt);
+        const prevCount = parseInt(badge.textContent, 10) || 0;
+        badge.textContent = String(S.cnt);
         const shouldShow = S.debug && S.cnt > 0;
         badge.style.display = shouldShow ? 'flex' : 'none';
         if (!shouldShow) {
@@ -3797,25 +5106,37 @@
         label.title = S.model || t('default_model');
     }
 
-    function updateUIState() {
+    function syncControlState() {
         q('mi-b')?.classList.toggle('off', !S.on);
-        q('mi-sw-main')?.classList.toggle('on', S.on);
-        q('mi-sw-effort')?.classList.toggle('on', S.effortOn);
-        q('mi-sw-debug')?.classList.toggle('on', S.debug);
+        for (const [id, enabled] of [['mi-sw-main', S.on], ['mi-sw-effort', S.effortOn], ['mi-sw-debug', S.debug]]) {
+            const control = q(id);
+            control?.classList.toggle('on', Boolean(enabled));
+            control?.setAttribute('aria-checked', enabled ? 'true' : 'false');
+        }
+        for (const [id, enabled] of [['mi-enable-state', S.on], ['mi-effort-state', S.effortOn]]) {
+            const state = q(id);
+            if (!state) continue;
+            state.textContent = t(enabled ? 'state_on' : 'state_off');
+            state.classList.toggle('is-on', Boolean(enabled));
+        }
+        const exportButton = q('mi-export-packets');
+        if (exportButton) exportButton.disabled = !S.debug;
         if (q('mi-st')) {
             q('mi-st').textContent = S.on ? (getDisplayName(S.model) || t('status_ready')) : t('paused');
             q('mi-st').classList.toggle('paused', !S.on);
         }
+    }
+
+    function updateUIState() {
+        syncControlState();
         renderEffortGrid();
         renderRecent();
         renderDropdown();
-        renderColors();
-        renderSponsorModule();
         updateBadge();
         updateInfo();
         updateDiagnostics();
         updateModelLabel();
-        recalcTokens();
+        scheduleTokenUpdate();
     }
 
     function applyColor(value) {
@@ -3833,8 +5154,7 @@
         if (!button) return;
 
         button.classList.remove('is-spinning', 'is-success');
-        void button.offsetWidth;
-        button.classList.add('is-spinning');
+        requestAnimationFrame(() => requestAnimationFrame(() => button.classList.add('is-spinning')));
 
         if (calcFeedbackTimer) window.clearTimeout(calcFeedbackTimer);
         calcFeedbackTimer = window.setTimeout(() => {
@@ -3845,6 +5165,18 @@
                 calcFeedbackTimer = 0;
             }, 720);
         }, 720);
+    }
+
+    function animateModelConfirmation() {
+        const button = q('mi-sel-btn');
+        if (!button) return;
+        button.classList.remove('is-confirmed');
+        requestAnimationFrame(() => requestAnimationFrame(() => button.classList.add('is-confirmed')));
+        if (modelConfirmTimer) window.clearTimeout(modelConfirmTimer);
+        modelConfirmTimer = window.setTimeout(() => {
+            button.classList.remove('is-confirmed');
+            modelConfirmTimer = 0;
+        }, 680);
     }
 
     function saveSelection(id) {
@@ -3861,15 +5193,34 @@
             );
         }
         updateUIState();
+        animateModelConfirmation();
+    }
+
+    function removeCustomModel(id) {
+        const value = String(id || '').trim();
+        if (!value || !S.custom.includes(value)) return false;
+        const removedCurrentSelection = S.model === value;
+        S.custom = S.custom.filter(item => item !== value);
+        S.recent = S.recent.filter(item => item !== value);
+        saveJson('custom', S.custom);
+        saveJson('recent', S.recent);
+        if (removedCurrentSelection) {
+            S.model = '';
+            saveValue('m', '');
+        }
+        updateUIState();
+        return true;
     }
 
     function syncStateFromStorage() {
         const previousModel = S.model;
+        const previousDebug = S.debug;
         S.on = readMainToggle();
         S.model = readString('m', '');
         if (S.model === 'auto') S.model = '';
         if (isHiddenModelId(S.model)) S.model = '';
         S.effort = readString('e', 'standard');
+        if (!EFFORTS.includes(S.effort)) S.effort = 'standard';
         S.effortOn = readFlag('eo', false);
         S.debug = readFlag('d', false);
         S.lang = readString('lang', 'zh-CN');
@@ -3881,6 +5232,7 @@
         S.agents = sanitizeWorkspaceAgentList(readJson('agents', S.agents));
         S.lastFetch = readString('lf', S.lastFetch || '');
         S.lastAgentFetch = readString('laf', S.lastAgentFetch || '');
+        if (previousDebug && !S.debug) clearDiagnosticArtifacts();
         applyTheme();
         applyUiText();
         updateUIState();
@@ -3956,13 +5308,49 @@
         const root = host;
         const button = $('mi-b');
         const mainPanel = $('mi-p');
-        const settingsPanel = $('mi-set');
+
+        const getLanguageOptions = () => [...(q('mi-lang-menu')?.querySelectorAll('.mi-lang-option') || [])];
+        const focusLanguageOption = edge => requestAnimationFrame(() => {
+            const options = getLanguageOptions();
+            if (!options.length) return;
+            const selectedIndex = options.findIndex(option => option.getAttribute('aria-selected') === 'true');
+            const index = edge === 'last'
+                ? options.length - 1
+                : edge === 'first'
+                ? 0
+                : Math.max(0, selectedIndex);
+            options[index].scrollIntoView({ block: 'nearest', inline: 'nearest' });
+            options[index].focus({ preventScroll: true });
+        });
+        const setLanguageMenuOpen = (open, focusEdge = '') => {
+            const picker = q('mi-lang-picker');
+            const trigger = q('mi-lang-trigger');
+            const menu = q('mi-lang-menu');
+            if (!picker || !trigger || !menu) return;
+            if (open) positionLanguageMenu();
+            picker.classList.toggle('open', open);
+            menu.classList.toggle('show', open);
+            trigger.setAttribute('aria-expanded', open ? 'true' : 'false');
+            menu.setAttribute('aria-hidden', open ? 'false' : 'true');
+            menu.toggleAttribute('inert', !open);
+            if (open && focusEdge) focusLanguageOption(focusEdge);
+        };
+        const selectLanguageOption = option => {
+            if (!option?.dataset.lang) return;
+            S.lang = option.dataset.lang;
+            save('lang', S.lang);
+            setLanguageMenuOpen(false);
+            applyUiText();
+            renderDropdown();
+            renderRecent();
+            updateUIState();
+            schedulePanelFocus(q('mi-lang-trigger'));
+        };
 
         const toggleMain = () => {
             S.on = !S.on;
             save('on', S.on ? '1' : '0');
             updateUIState();
-            updateModelLabel();
         };
 
         $('mi-sw-main').onclick = toggleMain;
@@ -3970,13 +5358,12 @@
             S.effortOn = !S.effortOn;
             save('eo', S.effortOn ? '1' : '0');
             updateUIState();
-            renderEffortGrid();
         };
         $('mi-sw-debug').onclick = () => {
             S.debug = !S.debug;
             save('d', S.debug ? '1' : '0');
+            if (!S.debug) clearDiagnosticArtifacts();
             updateUIState();
-            updateBadge();
             log('Debug mode', S.debug ? 'on' : 'off');
         };
 
@@ -3986,6 +5373,7 @@
             recalcTokens();
         };
         q('mi-export-packets')?.addEventListener('click', exportPacketLog);
+        q('mi-clear-diagnostics')?.addEventListener('click', resetDiagnostics);
         q('mi-diag-toggle')?.addEventListener('click', () => {
             S.diagOpen = !S.diagOpen;
             save('diag_open', S.diagOpen ? '1' : '0');
@@ -3994,15 +5382,44 @@
 
         $('mi-btn-set').onclick = event => {
             event.stopPropagation();
-            if (settingsPanel.classList.contains('show')) hidePanel(settingsPanel);
-            else if (mainPanel.classList.contains('show')) hidePanel(mainPanel, () => window.setTimeout(() => showPanel(settingsPanel), 50));
-            else showPanel(settingsPanel);
+            closeDropdown(false);
+            setLanguageMenuOpen(false);
+            if (!mainPanel.classList.contains('show')) showPanel(mainPanel);
+            setPanelView('settings');
         };
-        $('mi-set-close').onclick = () => hidePanel(settingsPanel);
+        $('mi-set-close').onclick = () => {
+            setLanguageMenuOpen(false);
+            setPanelView('main');
+        };
         $('mi-backdrop').onclick = () => {
             closeDropdown(false);
             hidePanel(mainPanel);
-            hidePanel(settingsPanel);
+        };
+
+        const getDropdownOptions = () => [...$('mi-drop').querySelectorAll('.mi-opt:not([disabled])')];
+        const focusDropdownOption = index => {
+            const options = getDropdownOptions();
+            if (!options.length) return;
+            const normalized = (index + options.length) % options.length;
+            options[normalized].focus({ preventScroll: true });
+            options[normalized].scrollIntoView({ block: 'nearest' });
+        };
+        const focusDropdownEdge = edge => requestAnimationFrame(() => {
+            const options = getDropdownOptions();
+            if (!options.length) return;
+            if (edge === 'selected') {
+                const selectedIndex = options.findIndex(option => option.getAttribute('aria-selected') === 'true');
+                focusDropdownOption(selectedIndex >= 0 ? selectedIndex : 0);
+                return;
+            }
+            focusDropdownOption(edge === 'last' ? options.length - 1 : 0);
+        });
+        const selectDropdownItem = item => {
+            if (!item) return;
+            const id = item.dataset.id || '';
+            closeDropdown(true);
+            saveSelection(id);
+            schedulePanelFocus($('mi-sel-btn'));
         };
 
         $('mi-sel-btn').onclick = event => {
@@ -4010,6 +5427,23 @@
             if ($('mi-drop').classList.contains('show')) closeDropdown(true);
             else openDropdown();
         };
+        $('mi-sel-btn').addEventListener('keydown', event => {
+            if (event.key === 'Tab' && $('mi-drop').classList.contains('show')) {
+                closeDropdown(false);
+                return;
+            }
+            const edge = event.key === 'ArrowUp' || event.key === 'End'
+                ? 'last'
+                : event.key === 'ArrowDown'
+                ? 'selected'
+                : event.key === 'Home'
+                ? 'first'
+                : '';
+            if (!edge) return;
+            event.preventDefault();
+            if (!$('mi-drop').classList.contains('show')) openDropdown();
+            focusDropdownEdge(edge);
+        });
         $('mi-drop').onclick = event => {
             if (event.target.closest('[data-action="clear-search"]')) {
                 event.preventDefault();
@@ -4020,40 +5454,82 @@
                 requestAnimationFrame(() => $('mi-drop')?.querySelector('#mi-menu-search')?.focus());
                 return;
             }
+            const removeButton = event.target.closest('[data-action="remove-custom"]');
+            if (removeButton) {
+                event.preventDefault();
+                event.stopPropagation();
+                const removeButtons = [...$('mi-drop').querySelectorAll('[data-action="remove-custom"]')];
+                const removeIndex = Math.max(0, removeButtons.indexOf(removeButton));
+                if (removeCustomModel(removeButton.dataset.id || '')) {
+                    requestAnimationFrame(() => {
+                        const nextButtons = [...($('mi-drop')?.querySelectorAll('[data-action="remove-custom"]') || [])];
+                        const nextTarget = nextButtons[Math.min(removeIndex, Math.max(0, nextButtons.length - 1))]
+                            || $('mi-drop')?.querySelector('#mi-menu-search')
+                            || $('mi-sel-btn');
+                        nextTarget?.focus({ preventScroll: true });
+                    });
+                }
+                return;
+            }
             const item = event.target.closest('.mi-opt');
             if (!item) return;
-            const id = item.dataset.id;
-            saveSelection(id || '');
-            closeDropdown(true);
+            selectDropdownItem(item);
         };
         $('mi-drop').addEventListener('input', event => {
             if (event.target?.id !== 'mi-menu-search') return;
             modelMenuQuery = event.target.value || '';
             modelMenuAgentOnly = modelMenuQuery.trim().startsWith('/');
-            renderDropdown();
+            scheduleDropdownFilterRender();
         });
         $('mi-drop').addEventListener('keydown', event => {
-            if (event.target?.id !== 'mi-menu-search') return;
-            event.stopPropagation();
-            if (event.key === 'Escape' && modelMenuQuery) {
+            const current = event.target.closest?.('.mi-opt');
+            const options = getDropdownOptions();
+            const currentIndex = current ? options.indexOf(current) : -1;
+            if (event.key === 'Tab') {
                 event.preventDefault();
-                modelMenuQuery = '';
-                modelMenuAgentOnly = false;
-                renderDropdown();
+                event.stopPropagation();
+                closeDropdown(false);
+                schedulePanelFocus(event.shiftKey ? $('mi-sel-btn') : $('mi-ref-btn'));
                 return;
             }
             if (event.key === 'Escape') {
                 event.preventDefault();
+                event.stopPropagation();
                 closeDropdown(true);
+                schedulePanelFocus($('mi-sel-btn'));
                 return;
             }
-            if (event.key === 'Enter') {
-                const first = $('mi-drop').querySelector('.mi-opt');
-                if (first) {
-                    event.preventDefault();
-                    saveSelection(first.dataset.id || '');
-                    closeDropdown(true);
+            if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+                if (!options.length) return;
+                event.preventDefault();
+                event.stopPropagation();
+                const nextIndex = currentIndex < 0
+                    ? (event.key === 'ArrowDown' ? 0 : options.length - 1)
+                    : currentIndex + (event.key === 'ArrowDown' ? 1 : -1);
+                focusDropdownOption(nextIndex);
+                return;
+            }
+            if (current && (event.key === 'Home' || event.key === 'End')) {
+                event.preventDefault();
+                event.stopPropagation();
+                focusDropdownOption(event.key === 'Home' ? 0 : options.length - 1);
+                return;
+            }
+            if (current?.dataset.custom === 'true' && (event.key === 'Delete' || event.key === 'Backspace')) {
+                event.preventDefault();
+                event.stopPropagation();
+                const deletedIndex = Math.max(0, currentIndex);
+                if (removeCustomModel(current.dataset.id || '')) {
+                    requestAnimationFrame(() => focusDropdownOption(Math.min(deletedIndex, Math.max(0, getDropdownOptions().length - 1))));
                 }
+                return;
+            }
+            if (event.key === 'Enter' || (current && event.key === ' ')) {
+                const item = current || options[0];
+                if (!item) return;
+                event.preventDefault();
+                event.stopPropagation();
+                selectDropdownItem(item);
             }
         });
 
@@ -4089,7 +5565,12 @@
 
         $('mi-chips').onclick = event => {
             const chip = event.target.closest('.mi-chip');
-            if (chip) saveSelection(chip.dataset.id || '');
+            if (!chip) return;
+            const id = chip.dataset.id || '';
+            saveSelection(id);
+            const nextChip = [...(q('mi-chips')?.querySelectorAll('.mi-chip') || [])]
+                .find(item => item.dataset.id === id);
+            schedulePanelFocus(nextChip || q('mi-sel-btn'));
         };
 
         $('mi-grid-eff').onclick = event => {
@@ -4098,8 +5579,33 @@
                 S.effort = option.dataset.e;
                 save('e', S.effort);
                 renderEffortGrid();
+                schedulePanelFocus(q('mi-grid-eff')?.querySelector(`[data-e="${S.effort}"]`));
             }
         };
+        const endEffortPress = () => q('mi-grid-eff')?.classList.remove('is-pressing');
+        $('mi-grid-eff').addEventListener('pointerdown', event => {
+            const option = event.target.closest('.mi-g-item');
+            if (option && !option.disabled) q('mi-grid-eff')?.classList.add('is-pressing');
+        }, { passive: true });
+        $('mi-grid-eff').addEventListener('pointerup', endEffortPress, { passive: true });
+        $('mi-grid-eff').addEventListener('pointercancel', endEffortPress, { passive: true });
+        $('mi-grid-eff').addEventListener('lostpointercapture', endEffortPress, { passive: true });
+        $('mi-grid-eff').addEventListener('keydown', event => {
+            const option = event.target.closest('.mi-g-item');
+            if (!option || option.disabled) return;
+            const currentIndex = EFFORTS.indexOf(option.dataset.e);
+            let nextIndex = currentIndex;
+            if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') nextIndex = Math.max(0, currentIndex - 1);
+            else if (event.key === 'ArrowRight' || event.key === 'ArrowDown') nextIndex = Math.min(EFFORTS.length - 1, currentIndex + 1);
+            else if (event.key === 'Home') nextIndex = 0;
+            else if (event.key === 'End') nextIndex = EFFORTS.length - 1;
+            else return;
+            event.preventDefault();
+            S.effort = EFFORTS[nextIndex];
+            save('e', S.effort);
+            renderEffortGrid();
+            schedulePanelFocus(q('mi-grid-eff')?.querySelector(`[data-e="${S.effort}"]`));
+        });
 
         $('mi-clrs').onclick = event => {
             const swatch = event.target.closest('.mi-clr');
@@ -4108,7 +5614,29 @@
             applyColor(hex);
             if ($('mi-color-picker')) $('mi-color-picker').value = hex;
             if ($('mi-color-hex')) $('mi-color-hex').value = hex;
+            schedulePanelFocus(q('mi-clrs')?.querySelector('.mi-clr.active'));
         };
+        $('mi-clrs').addEventListener('keydown', event => {
+            const swatch = event.target.closest('.mi-clr');
+            if (!swatch) return;
+            const swatches = [...q('mi-clrs').querySelectorAll('.mi-clr')];
+            const currentIndex = swatches.indexOf(swatch);
+            const columns = 5;
+            let nextIndex = currentIndex;
+            if (event.key === 'ArrowLeft') nextIndex = (currentIndex - 1 + swatches.length) % swatches.length;
+            else if (event.key === 'ArrowRight') nextIndex = (currentIndex + 1) % swatches.length;
+            else if (event.key === 'ArrowUp') nextIndex = (currentIndex - columns + swatches.length) % swatches.length;
+            else if (event.key === 'ArrowDown') nextIndex = (currentIndex + columns) % swatches.length;
+            else if (event.key === 'Home') nextIndex = 0;
+            else if (event.key === 'End') nextIndex = swatches.length - 1;
+            else return;
+            event.preventDefault();
+            const hex = swatches[nextIndex]?.dataset.color || '';
+            applyColor(hex);
+            if ($('mi-color-picker')) $('mi-color-picker').value = hex;
+            if ($('mi-color-hex')) $('mi-color-hex').value = hex;
+            schedulePanelFocus(q('mi-clrs')?.querySelector('.mi-clr.active'));
+        });
         q('mi-color-picker')?.addEventListener('input', event => {
             const value = event.target.value;
             applyColor(value);
@@ -4124,45 +5652,102 @@
         q('mi-lang-trigger')?.addEventListener('click', event => {
             event.stopPropagation();
             const picker = q('mi-lang-picker');
-            const trigger = q('mi-lang-trigger');
-            if (!picker || !trigger) return;
-            const open = picker.classList.toggle('open');
-            trigger.setAttribute('aria-expanded', open ? 'true' : 'false');
+            if (!picker) return;
+            setLanguageMenuOpen(!picker.classList.contains('open'));
+        });
+        q('mi-lang-trigger')?.addEventListener('keydown', event => {
+            if (event.key === 'Tab' && q('mi-lang-picker')?.classList.contains('open')) {
+                setLanguageMenuOpen(false);
+                return;
+            }
+            const edge = event.key === 'ArrowUp' || event.key === 'End'
+                ? 'last'
+                : event.key === 'ArrowDown'
+                ? 'selected'
+                : event.key === 'Home'
+                ? 'first'
+                : '';
+            if (!edge) return;
+            event.preventDefault();
+            setLanguageMenuOpen(true, edge);
         });
         q('mi-lang-menu')?.addEventListener('click', event => {
             const option = event.target.closest('.mi-lang-option');
             if (!option) return;
-            S.lang = option.dataset.lang;
-            save('lang', S.lang);
-            q('mi-lang-picker')?.classList.remove('open');
-            q('mi-lang-trigger')?.setAttribute('aria-expanded', 'false');
-            applyUiText();
-            renderDropdown();
-            renderRecent();
-            updateUIState();
+            selectLanguageOption(option);
+        });
+        q('mi-lang-menu')?.addEventListener('keydown', event => {
+            const options = getLanguageOptions();
+            const option = event.target.closest('.mi-lang-option');
+            const currentIndex = options.indexOf(option);
+            if (event.key === 'Tab') {
+                event.preventDefault();
+                setLanguageMenuOpen(false);
+                schedulePanelFocus(event.shiftKey ? q('mi-lang-trigger') : q('mi-sw-debug'));
+                return;
+            }
+            if (event.key === 'Escape') {
+                event.preventDefault();
+                setLanguageMenuOpen(false);
+                schedulePanelFocus(q('mi-lang-trigger'));
+                return;
+            }
+            if ((event.key === 'Enter' || event.key === ' ') && option) {
+                event.preventDefault();
+                selectLanguageOption(option);
+                return;
+            }
+            let nextIndex = currentIndex;
+            if (event.key === 'ArrowDown') nextIndex = (Math.max(0, currentIndex) + 1) % options.length;
+            else if (event.key === 'ArrowUp') nextIndex = (Math.max(0, currentIndex) - 1 + options.length) % options.length;
+            else if (event.key === 'Home') nextIndex = 0;
+            else if (event.key === 'End') nextIndex = options.length - 1;
+            else return;
+            event.preventDefault();
+            options[nextIndex]?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+            options[nextIndex]?.focus({ preventScroll: true });
         });
 
         document.addEventListener('click', event => {
-            if (!event.target.closest('#mi-lang-picker')) {
-                q('mi-lang-picker')?.classList.remove('open');
-                q('mi-lang-trigger')?.setAttribute('aria-expanded', 'false');
-            }
-            if ($('mi-drop').classList.contains('show') && !event.target.closest('#mi-sel-wrap')) closeDropdown(true);
-            if ((mainPanel.classList.contains('show') || settingsPanel.classList.contains('show')) && !event.target.closest('#mi')) {
+            const path = typeof event.composedPath === 'function' ? event.composedPath() : [];
+            const isWithin = element => Boolean(element && (path.includes(element) || element.contains(event.target)));
+            if (!isWithin(q('mi-lang-picker')) && !isWithin(q('mi-lang-menu'))) setLanguageMenuOpen(false);
+            if ($('mi-drop').classList.contains('show') && !isWithin($('mi-sel-wrap')) && !isWithin($('mi-drop'))) closeDropdown(true);
+            if (mainPanel.classList.contains('show') && !isWithin(root)) {
                 closeDropdown(false);
                 hidePanel(mainPanel);
-                hidePanel(settingsPanel);
             }
         });
         document.addEventListener('keydown', event => {
+            trapPanelFocus(event);
+            if (event.defaultPrevented) return;
             if (event.altKey && event.key.toLowerCase() === 'm') {
                 event.preventDefault();
                 togglePanel(mainPanel);
+                return;
             }
-            if (event.key === 'Escape') {
+            if (event.key !== 'Escape') return;
+
+            if (q('mi-lang-picker')?.classList.contains('open')) {
+                event.preventDefault();
+                setLanguageMenuOpen(false);
+                schedulePanelFocus(q('mi-lang-trigger'));
+                return;
+            }
+            if ($('mi-drop').classList.contains('show')) {
+                event.preventDefault();
                 closeDropdown(false);
-                if (settingsPanel.classList.contains('show')) hidePanel(settingsPanel);
-                else if (mainPanel.classList.contains('show')) hidePanel(mainPanel);
+                schedulePanelFocus($('mi-sel-btn'));
+                return;
+            }
+            if (mainPanel.classList.contains('show') && mainPanel.dataset.view === 'settings') {
+                event.preventDefault();
+                setPanelView('main');
+                return;
+            }
+            if (mainPanel.classList.contains('show')) {
+                event.preventDefault();
+                hidePanel(mainPanel);
             }
         });
 
@@ -4171,52 +5756,136 @@
         let startY = 0;
         let initLeft = 0;
         let initTop = 0;
+        let dragX = 0;
+        let dragY = 0;
+        let dragFrame = 0;
+        let activePointerId = null;
+        let releasingPointerCapture = false;
+        const paintDragFrame = () => {
+            dragFrame = 0;
+            if (isDrag && root) root.style.transform = `translate3d(${dragX}px, ${dragY}px, 0)`;
+        };
+        const resetDragVisual = () => {
+            if (dragFrame) cancelAnimationFrame(dragFrame);
+            dragFrame = 0;
+            if (root) {
+                root.style.transform = '';
+                root.style.willChange = '';
+            }
+            button?.classList.remove('dragging');
+        };
+        const releaseActivePointer = pointerId => {
+            if (!button?.hasPointerCapture?.(pointerId)) return;
+            releasingPointerCapture = true;
+            try {
+                button.releasePointerCapture(pointerId);
+            } finally {
+                releasingPointerCapture = false;
+            }
+        };
         button?.addEventListener('pointerdown', event => {
             if (event.button !== 0 || !root) return;
             isDrag = false;
+            activePointerId = event.pointerId;
+            dragX = 0;
+            dragY = 0;
             startX = event.clientX;
             startY = event.clientY;
-            const rect = root.getBoundingClientRect();
-            initLeft = rect.left;
-            initTop = rect.top;
-            root.style.left = `${initLeft}px`;
-            root.style.top = `${initTop}px`;
-            root.style.right = 'auto';
-            root.style.bottom = 'auto';
             button.setPointerCapture(event.pointerId);
-            button.classList.add('dragging');
-        });
-        button?.addEventListener('pointermove', event => {
-            if (event.buttons !== 1) return;
-            const dx = event.clientX - startX;
-            const dy = event.clientY - startY;
-            if (Math.hypot(dx, dy) > 5) isDrag = true;
-            if (!isDrag || !root) return;
-            root.style.left = `${initLeft + dx}px`;
-            root.style.top = `${initTop + dy}px`;
-            root.style.right = 'auto';
-            root.style.bottom = 'auto';
-        });
-        button?.addEventListener('pointerup', event => {
-            if (button.hasPointerCapture?.(event.pointerId)) button.releasePointerCapture(event.pointerId);
-            button.classList.remove('dragging');
-            if (isDrag) {
-                clampPosition();
-                suppressClick = true;
-                window.setTimeout(() => { suppressClick = false; }, 120);
+            if (!mainPanel.classList.contains('show')) {
+                button.classList.add('panel-primed');
+                // Let the press paint first. Geometry/WAAPI priming is moved to the
+                // next frame so the first pointer response never waits on layout.
+                if (panelMotionPrimeFrame) cancelAnimationFrame(panelMotionPrimeFrame);
+                panelMotionPrimeFrame = requestAnimationFrame(() => {
+                    panelMotionPrimeFrame = 0;
+                    if (activePointerId === event.pointerId && !mainPanel.classList.contains('show') && !isDrag) {
+                        primePanelMotion(mainPanel);
+                    }
+                });
             }
         });
-        button?.addEventListener('pointercancel', event => {
-            if (button.hasPointerCapture?.(event.pointerId)) button.releasePointerCapture(event.pointerId);
-            button.classList.remove('dragging');
+        button?.addEventListener('pointermove', event => {
+            if (activePointerId !== event.pointerId || event.buttons !== 1) return;
+            dragX = event.clientX - startX;
+            dragY = event.clientY - startY;
+            if (!isDrag && Math.hypot(dragX, dragY) > 5) {
+                isDrag = true;
+                const rect = root.getBoundingClientRect();
+                initLeft = rect.left;
+                initTop = rect.top;
+                button.classList.remove('panel-primed');
+                closeDropdown(false);
+                hidePanel(mainPanel, { immediate: true });
+                invalidatePanelMotionLayout(mainPanel);
+                root.style.left = `${initLeft}px`;
+                root.style.top = `${initTop}px`;
+                root.style.right = 'auto';
+                root.style.bottom = 'auto';
+                root.style.willChange = 'transform';
+                button.classList.add('dragging');
+            }
+            if (!isDrag || !root) return;
+            if (!dragFrame) dragFrame = requestAnimationFrame(paintDragFrame);
+        });
+        button?.addEventListener('pointerup', event => {
+            if (activePointerId !== event.pointerId) return;
+            dragX = event.clientX - startX;
+            dragY = event.clientY - startY;
+            releaseActivePointer(event.pointerId);
+            if (isDrag) {
+                resetDragVisual();
+                setHostPosition(initLeft + dragX, initTop + dragY, true);
+                invalidatePanelMotionLayout(mainPanel);
+                schedulePanelMotionPreparation(mainPanel);
+                schedulePanelFirstPaintPreparation(mainPanel);
+                suppressClick = true;
+                window.setTimeout(() => { suppressClick = false; }, 120);
+            } else {
+                resetDragVisual();
+                window.setTimeout(() => {
+                    if (!mainPanel.classList.contains('show')) {
+                        button.classList.remove('panel-primed');
+                        mainPanel.classList.remove('is-motion-primed');
+                    }
+                }, 180);
+            }
             isDrag = false;
+            activePointerId = null;
+        });
+        button?.addEventListener('pointercancel', event => {
+            releaseActivePointer(event.pointerId);
+            resetDragVisual();
+            button.classList.remove('panel-primed');
+            mainPanel.classList.remove('is-motion-primed');
+            isDrag = false;
+            activePointerId = null;
+        });
+        button?.addEventListener('lostpointercapture', () => {
+            if (releasingPointerCapture || activePointerId === null) return;
+            if (isDrag) {
+                resetDragVisual();
+                setHostPosition(initLeft + dragX, initTop + dragY, true);
+                invalidatePanelMotionLayout(mainPanel);
+                schedulePanelMotionPreparation(mainPanel);
+                schedulePanelFirstPaintPreparation(mainPanel);
+            } else {
+                resetDragVisual();
+            }
+            button.classList.remove('panel-primed');
+            if (!mainPanel.classList.contains('show')) mainPanel.classList.remove('is-motion-primed');
+            isDrag = false;
+            activePointerId = null;
         });
         button?.addEventListener('click', event => {
             event.stopPropagation();
-            if (suppressClick) return;
+            if (suppressClick) {
+                button.classList.remove('panel-primed');
+                mainPanel.classList.remove('is-motion-primed');
+                return;
+            }
             closeDropdown(false);
-            if (settingsPanel.classList.contains('show')) hidePanel(settingsPanel);
-            else togglePanel(mainPanel);
+            togglePanel(mainPanel);
         });
         button?.addEventListener('contextmenu', event => { event.preventDefault(); toggleMain(); });
 
@@ -4229,6 +5898,18 @@
                 proportionalReposition(prevVW, prevVH);
                 prevVW = window.innerWidth;
                 prevVH = window.innerHeight;
+                const panel = q('mi-p');
+                const keepOpen = Boolean(panel?.classList.contains('show') && !panel.classList.contains('is-closing'));
+                if (panel?.classList.contains('show')) clearPanelMotionAnimation(panel, keepOpen);
+                invalidatePanelMotionLayout(panel);
+                if (keepOpen) {
+                    const geometry = preparePanelMotionLayout(panel);
+                    preparePanelMotionAnimation(panel, geometry, PANEL_MOTION_DURATION);
+                }
+                else schedulePanelMotionPreparation(panel);
+                schedulePanelFirstPaintPreparation(panel);
+                if (q('mi-drop')?.classList.contains('show')) positionDropdown();
+                if (q('mi-lang-menu')?.classList.contains('show')) positionLanguageMenu();
             }, 100);
         };
         window.addEventListener('resize', onResize);
@@ -4243,6 +5924,31 @@
         host.id = 'mi';
         host.innerHTML = `
 <style>
+@property --mi-motion-bridge-opacity {
+    syntax: '<number>';
+    inherits: false;
+    initial-value: 0;
+}
+@property --mi-motion-bridge-y {
+    syntax: '<number>';
+    inherits: false;
+    initial-value: 8;
+}
+@property --mi-motion-bridge-scale {
+    syntax: '<number>';
+    inherits: false;
+    initial-value: 0.36;
+}
+@property --mi-panel-bridge-opacity {
+    syntax: '<number>';
+    inherits: false;
+    initial-value: 0;
+}
+@property --mi-panel-bridge-scale {
+    syntax: '<number>';
+    inherits: false;
+    initial-value: 0.68;
+}
 #mi {
     --mi-bg: #007aff;
     --mi-bg-rgb: 0, 122, 255;
@@ -4252,21 +5958,25 @@
     --mi-radius-md: 14px;
     --mi-radius-lg: 18px;
     --mi-radius-xl: 24px;
-    --mi-bg-primary: rgba(22, 22, 24, 0.92);
-    --mi-bg-secondary: rgba(38, 38, 42, 0.9);
-    --mi-bg-tertiary: rgba(255, 255, 255, 0.06);
-    --mi-bg-elevated: rgba(52, 52, 56, 0.95);
-    --mi-text-primary: #ffffff;
-    --mi-text-secondary: rgba(235, 235, 245, 0.65);
-    --mi-text-tertiary: rgba(235, 235, 245, 0.35);
+    --mi-bg-primary: rgba(18, 20, 24, 0.94);
+    --mi-bg-secondary: rgba(31, 34, 40, 0.92);
+    --mi-bg-tertiary: rgba(255, 255, 255, 0.055);
+    --mi-bg-elevated: rgba(43, 47, 55, 0.96);
+    --mi-text-primary: #f5f5f7;
+    --mi-text-secondary: rgba(235, 235, 245, 0.68);
+    --mi-text-tertiary: rgba(235, 235, 245, 0.46);
+    --mi-text-placeholder: rgba(235, 235, 245, 0.54);
     --mi-separator: rgba(255, 255, 255, 0.08);
     --mi-shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.12), 0 1px 2px rgba(0, 0, 0, 0.06);
     --mi-shadow-glow: 0 0 40px -10px var(--mi-bg), 0 8px 32px -8px rgba(0, 0, 0, 0.3);
     --mi-shadow-float: 0 32px 64px rgba(0, 0, 0, 0.4), 0 16px 32px rgba(0, 0, 0, 0.2), 0 0 0 0.5px rgba(255,255,255,0.1);
     --mi-ease: cubic-bezier(0.4, 0, 0.2, 1);
     --mi-ease-out-quart: cubic-bezier(0.25, 1, 0.5, 1);
-    --mi-ease-out-back: cubic-bezier(0.34, 1.56, 0.64, 1);
     --mi-ease-spring: cubic-bezier(0.5, 1.25, 0.75, 1.25);
+    --mi-ease-fluid: cubic-bezier(0.32, 0.72, 0, 1);
+    --mi-ease-liquid: cubic-bezier(0.22, 1.22, 0.36, 1);
+    --mi-ease-panel-close: cubic-bezier(0.4, 0, 1, 1);
+    --mi-ease-anchor: cubic-bezier(0.18, 1.08, 0.34, 1);
     position: fixed;
     bottom: 24px;
     right: 24px;
@@ -4279,23 +5989,137 @@
     -moz-osx-font-smoothing: grayscale;
     pointer-events: none;
 }
+#mi::before {
+    content: '';
+    position: absolute;
+    right: 11px;
+    bottom: 18px;
+    width: 34px;
+    height: 46px;
+    border-radius: 999px;
+    pointer-events: none;
+    z-index: 2;
+    opacity: var(--mi-motion-bridge-opacity, 0);
+    transform: translate3d(0, calc(var(--mi-motion-bridge-y, 8) * 1px), 0) scaleY(var(--mi-motion-bridge-scale, 0.36));
+    transform-origin: bottom center;
+    background: linear-gradient(180deg, rgba(255,255,255,0.025), rgba(255,255,255,0.10) 48%, rgba(var(--mi-bg-rgb),0.10));
+    border: 1px solid rgba(255,255,255,0.12);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.12), 0 0 14px rgba(255,255,255,0.035);
+    transition: none;
+}
+#mi:has(#mi-p[data-placement="below"])::before {
+    top: 18px;
+    bottom: auto;
+    transform-origin: top center;
+}
+#mi:has(#mi-p[data-placement="detached"])::before {
+    display: none;
+}
 #mi * { box-sizing: border-box; }
+:where(#mi) button,
+:where(#mi) input {
+    font: inherit;
+    line-height: normal;
+    letter-spacing: normal;
+    text-transform: none;
+    text-indent: 0;
+    text-shadow: none;
+}
+:where(#mi) button {
+    display: inline-block;
+    width: auto;
+    height: auto;
+    min-width: 0;
+    min-height: 0;
+    max-width: none;
+    max-height: none;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    appearance: none;
+    background: none;
+    color: inherit;
+    box-shadow: none;
+    filter: none;
+    opacity: 1;
+    overflow: visible;
+    text-align: inherit;
+    transform: none;
+    vertical-align: middle;
+    white-space: normal;
+    -webkit-tap-highlight-color: transparent;
+}
+:where(#mi) input {
+    display: inline-block;
+    width: auto;
+    height: auto;
+    min-width: 0;
+    min-height: 0;
+    max-width: none;
+    max-height: none;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    appearance: none;
+    background: none;
+    color: inherit;
+    box-shadow: none;
+    filter: none;
+    opacity: 1;
+    overflow: visible;
+    text-align: inherit;
+    transform: none;
+    vertical-align: middle;
+}
+#mi :is(button, input, a):focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--mi-bg) 72%, #ffffff);
+    outline-offset: 2px;
+}
+.mi-sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+}
 #mi-backdrop {
     position: fixed;
     inset: 0;
-    background: radial-gradient(ellipse at bottom right, rgba(0,0,0,0.25) 0%, rgba(0,0,0,0.4) 100%);
-    backdrop-filter: blur(0px) saturate(100%);
-    -webkit-backdrop-filter: blur(0px) saturate(100%);
+    background:
+        radial-gradient(110% 74% at 50% -10%, rgba(255,255,255,0.045), transparent 58%),
+        linear-gradient(180deg, rgba(3, 5, 8, 0.16), rgba(3, 5, 8, 0.30));
+    backdrop-filter: blur(4px) saturate(116%) brightness(0.94);
+    -webkit-backdrop-filter: blur(4px) saturate(116%) brightness(0.94);
     opacity: 0;
+    visibility: hidden;
     pointer-events: none;
     z-index: 1;
-    transition: opacity 0.4s var(--mi-ease-out-quart), backdrop-filter 0.5s var(--mi-ease-out-quart);
+    backface-visibility: hidden;
+    transform: translateZ(0);
+    transition: opacity 0.28s cubic-bezier(0.3, 0, 0.3, 1), visibility 0s linear 0.28s;
 }
 #mi-backdrop.show {
     opacity: 1;
+    visibility: visible;
     pointer-events: auto;
-    backdrop-filter: blur(8px) saturate(120%);
-    -webkit-backdrop-filter: blur(8px) saturate(120%);
+    transition: opacity 0.20s cubic-bezier(0.16, 0.8, 0.2, 1), visibility 0s linear 0s;
+}
+#mi-backdrop.is-first-paint-warmup,
+#mi-backdrop.is-first-paint-ready {
+    visibility: visible;
+    opacity: 0.001;
+    pointer-events: none;
+}
+#mi-backdrop.is-motion-primed,
+#mi-backdrop.is-motion-active {
+    will-change: opacity;
+    backface-visibility: hidden;
 }
 #mi-b {
     position: relative;
@@ -4308,43 +6132,71 @@
     pointer-events: auto;
     cursor: pointer;
     user-select: none;
-    background: linear-gradient(135deg, var(--mi-bg) 0%, color-mix(in srgb, var(--mi-bg) 80%, #000) 100%);
-    box-shadow: var(--mi-shadow-glow), inset 0 1px 0 rgba(255,255,255,0.2), inset 0 -1px 0 rgba(0,0,0,0.1);
-    transition: transform 0.35s var(--mi-ease-spring), box-shadow 0.35s var(--mi-ease-out-quart), background 0.4s var(--mi-ease);
+    appearance: none;
+    padding: 0;
+    color: #fff;
+    background:
+        radial-gradient(circle at 32% 24%, rgba(255,255,255,0.16) 0%, rgba(255,255,255,0.025) 34%, transparent 48%),
+        linear-gradient(150deg, rgba(41, 44, 51, 0.98) 0%, rgba(24, 26, 31, 0.99) 58%, rgba(15, 17, 21, 0.99) 100%);
+    box-shadow: 0 14px 34px rgba(0,0,0,0.32), 0 4px 12px rgba(0,0,0,0.2), inset 0 1px 0 rgba(255,255,255,0.14), inset 0 -1px 0 rgba(0,0,0,0.5);
+    transition: transform 0.24s var(--mi-ease-anchor), box-shadow 0.26s var(--mi-ease-fluid), border-color 0.2s var(--mi-ease);
     touch-action: none;
-    border: 1px solid rgba(255,255,255,0.15);
+    border: 1px solid rgba(255,255,255,0.13);
     z-index: 3;
-    animation: miBreathing 4s ease-in-out infinite;
+}
+#mi-b::after {
+    content: '';
+    position: absolute;
+    inset: 3px;
+    border-radius: 50%;
+    border: 1px solid rgba(255,255,255,0.1);
+    box-shadow: inset 0 1px 4px rgba(255,255,255,0.07), inset 0 -3px 7px rgba(0,0,0,0.13);
+    pointer-events: none;
+    transition: border-color 0.36s var(--mi-ease), box-shadow 0.42s var(--mi-ease);
 }
 #mi-b::before {
     content: '';
     position: absolute;
-    inset: -3px;
+    inset: -5px;
     border-radius: 50%;
-    background: conic-gradient(from 0deg, transparent 0%, var(--mi-bg) 25%, transparent 50%, var(--mi-bg) 75%, transparent 100%);
+    border: 1px solid rgba(var(--mi-bg-rgb), 0.34);
     opacity: 0;
     z-index: -1;
-    transition: opacity 0.4s var(--mi-ease);
+    transform: scale(0.88);
+    transition: opacity 0.42s var(--mi-ease), transform 0.52s var(--mi-ease-fluid);
 }
-#mi-b:hover::before {
-    opacity: 0.6;
-    animation: miRotateGlow 3s linear infinite;
+#mi-b.panel-open {
+    transform: translate3d(0,-2px,0) scale(0.972);
+    border-color: rgba(var(--mi-bg-rgb), 0.42);
+    box-shadow: 0 18px 40px rgba(0,0,0,0.36), 0 0 0 5px rgba(var(--mi-bg-rgb), 0.11), 0 0 22px rgba(var(--mi-bg-rgb), 0.16), inset 0 1px 0 rgba(255,255,255,0.2);
 }
-#mi-b:hover {
-    transform: scale(1.1) translateY(-2px);
-    box-shadow: 0 0 60px -5px var(--mi-bg), 0 20px 50px -10px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.3);
-    animation: none;
+#mi-b.panel-open::before {
+    opacity: 0.56;
+    transform: scale(1.08);
 }
-#mi-b.panel-open { transform: scale(0.92); animation: none; }
+#mi-b.panel-open::after {
+    border-color: rgba(255,255,255,0.22);
+    box-shadow: inset 0 1px 5px rgba(255,255,255,0.11), inset 0 -3px 8px rgba(0,0,0,0.16);
+}
+#mi-b.panel-primed,
+#mi-b:active:not(.dragging) {
+    transform: translate3d(0, 0.5px, 0) scale(0.968);
+    transition: transform 0.10s cubic-bezier(0.2, 0.82, 0.2, 1), box-shadow 0.10s var(--mi-ease);
+}
+#mi-b.panel-primed::before {
+    opacity: 0.34;
+    transform: scale(0.96);
+    transition-duration: 0.12s;
+}
+#mi-b.panel-primed,
+#mi-b.is-motion-active { will-change: transform; }
 #mi-b.off {
     background: linear-gradient(135deg, rgba(100,100,105,0.9) 0%, rgba(70,70,75,0.9) 100%);
     box-shadow: var(--mi-shadow-sm);
-    animation: none;
 }
 #mi-b.dragging {
-    transform: scale(1.15);
-    box-shadow: 0 0 80px -5px var(--mi-bg), 0 30px 60px -15px rgba(0,0,0,0.5);
-    animation: none;
+    transform: scale(1.055);
+    box-shadow: 0 22px 48px rgba(0,0,0,0.42), 0 0 0 7px rgba(var(--mi-bg-rgb), 0.12);
     cursor: grabbing;
 }
 #mi-ring-wrap {
@@ -4354,10 +6206,11 @@
     width: 64px;
     height: 64px;
     pointer-events: none;
+    transition: transform 0.52s var(--mi-ease-fluid), opacity 0.34s var(--mi-ease);
 }
 #mi-ring-svg { width: 100%; height: 100%; transform: rotate(-90deg); }
 #mi-ring-bg, #mi-ring-fg { fill: none; stroke-width: 2.5; }
-#mi-ring-bg { stroke: rgba(255,255,255,0.12); }
+#mi-ring-bg { stroke: rgba(255,255,255,0.06); }
 #mi-ring-fg {
     stroke: var(--mi-bg);
     stroke-linecap: round;
@@ -4365,14 +6218,68 @@
     filter: drop-shadow(0 0 3px var(--mi-bg));
 }
 #mi-b .icon {
-    width: 28px;
-    height: 28px;
-    fill: #fff;
-    filter: drop-shadow(0 2px 4px rgba(0,0,0,0.2));
-    transition: transform 0.4s var(--mi-ease-spring);
+    width: 34px;
+    height: 34px;
+    overflow: visible;
+    color: #fff;
+    filter: drop-shadow(0 3px 6px rgba(0,0,0,0.28));
+    transform-box: view-box;
+    transform-origin: center;
+    transform: rotate(0deg) scale(1);
+    transition: transform 0.52s var(--mi-ease-fluid), filter 0.34s var(--mi-ease);
 }
-#mi-b:hover .icon { transform: rotate(20deg) scale(1.1); }
-#mi-b.panel-open .icon { transform: rotate(180deg) scale(0.9); }
+#mi-b .mi-brand-orbit-group,
+#mi-b .mi-brand-core {
+    transform-box: view-box;
+    transform-origin: center;
+    transform: rotate(0deg);
+    transition: none;
+}
+#mi-b .mi-brand-orbit {
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 4.5;
+    stroke-linecap: round;
+    opacity: 0.94;
+}
+#mi-b .mi-brand-node {
+    fill: currentColor;
+}
+#mi-b .mi-brand-lens {
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 3.2;
+    stroke-linejoin: round;
+}
+#mi-b .mi-brand-pupil {
+    fill: color-mix(in srgb, var(--mi-bg) 72%, #ffffff);
+    filter: drop-shadow(0 0 5px rgba(var(--mi-bg-rgb), 0.52));
+}
+#mi-b .mi-brand-glint {
+    fill: #ffffff;
+}
+#mi-b.panel-open #mi-ring-wrap { transform: scale(1.045); opacity: 0.94; }
+#mi-b.panel-open .icon { transform: scale(0.985); }
+#mi-b.panel-open .mi-brand-orbit-group { transform: rotate(var(--mi-orbit-open-angle, 224deg)) scale(1.012); }
+#mi-b.panel-open .mi-brand-core { transform: rotate(var(--mi-core-open-angle, -202deg)) scale(1.016); }
+#mi-b.panel-open.is-motion-active:not(.is-closing) .mi-brand-orbit-group {
+    transition: transform 0.60s cubic-bezier(0.26, 0.08, 0.18, 1);
+}
+#mi-b.panel-open.is-motion-active:not(.is-closing) .mi-brand-core {
+    transition: transform 0.56s cubic-bezier(0.28, 0.06, 0.18, 1);
+}
+#mi-b.is-closing .mi-brand-orbit-group {
+    transform: rotate(var(--mi-orbit-close-angle, 360deg)) scale(1);
+    transition: transform 0.34s var(--mi-ease-panel-close);
+}
+#mi-b.is-closing .mi-brand-core {
+    transform: rotate(var(--mi-core-close-angle, -360deg)) scale(1);
+    transition: transform 0.32s var(--mi-ease-panel-close);
+}
+#mi-b.is-motion-active .mi-brand-orbit-group,
+#mi-b.is-motion-active .mi-brand-core {
+    will-change: transform;
+}
 #mi-n {
     position: absolute;
     top: -4px;
@@ -4415,51 +6322,212 @@
     opacity: 1;
     bottom: -30px;
 }
-#mi-p, #mi-set {
+#mi-b.panel-open #mi-model-label {
+    opacity: 0;
+    bottom: -22px;
+    pointer-events: none;
+}
+#mi-p {
     position: absolute;
     bottom: 72px;
     right: 0;
-    width: 380px;
-    max-height: min(680px, calc(100vh - 96px));
-    overflow: hidden;
-    border-radius: 20px;
-    background: linear-gradient(180deg, rgba(26, 27, 31, 0.96) 0%, rgba(18, 19, 23, 0.98) 100%);
-    backdrop-filter: blur(20px) saturate(180%);
-    border: 1px solid rgba(255,255,255,0.09);
-    box-shadow: 0 24px 70px rgba(0,0,0,0.38), 0 8px 24px rgba(0,0,0,0.22), inset 0 1px 0 rgba(255,255,255,0.08);
-    transform-origin: calc(100% - 24px) calc(100% + 24px);
+    width: 368px;
+    max-height: var(--mi-panel-available-height, min(680px, calc(100vh - 96px)));
+    overflow: visible;
+    border-radius: 22px;
     opacity: 0;
+    transform: none;
+    transform-origin: calc(100% - 24px) calc(100% - 24px);
+    backface-visibility: hidden;
     pointer-events: none;
     visibility: hidden;
     z-index: 2;
+    isolation: isolate;
+    contain: layout style;
+    transition: none;
 }
-#mi-p {
-    transform: scale(0.2);
-    transition: opacity 0.3s var(--mi-ease-out-quart), transform 0.3s var(--mi-ease-out-quart), visibility 0s linear 0.3s;
+#mi-p[data-placement="detached"] {
+    z-index: 2;
 }
-#mi-set {
-    width: 320px;
-    bottom: 76px;
-    padding: 18px;
-    overflow: auto;
-    transform: scale(0.9) translateY(10px);
-    transition: opacity 0.22s var(--mi-ease-out-quart), transform 0.22s var(--mi-ease-out-quart), visibility 0s linear 0.22s;
+#mi-p::before {
+    content: '';
+    position: absolute;
+    left: calc(var(--mi-panel-anchor-x, 340px) - 22px);
+    top: calc(var(--mi-panel-anchor-y, 650px) - 10px);
+    width: 44px;
+    height: 20px;
+    border-radius: 999px;
+    pointer-events: none;
+    z-index: 2;
+    opacity: var(--mi-panel-bridge-opacity, 0);
+    transform: scale(var(--mi-panel-bridge-scale, 0.68));
+    transform-origin: center;
+    background: radial-gradient(ellipse at center, rgba(255,255,255,0.10) 0%, rgba(var(--mi-bg-rgb),0.07) 46%, transparent 76%);
+    transition: none;
 }
-#mi-p.show, #mi-set.show {
-    opacity: 1;
-    pointer-events: auto;
-    visibility: visible;
+#mi-p::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    pointer-events: none;
+    z-index: 4;
+    opacity: var(--mi-panel-rim-opacity, 0);
+    transform: scale3d(var(--mi-panel-rim-scale, 0.72), var(--mi-panel-rim-scale, 0.72), 1);
+    transform-origin: var(--mi-panel-anchor-x, calc(100% - 24px)) var(--mi-panel-anchor-y, calc(100% - 24px));
+    background:
+        radial-gradient(96px 84px at var(--mi-panel-anchor-x, calc(100% - 24px)) var(--mi-panel-anchor-y, calc(100% - 24px)), rgba(255,255,255,0.20), transparent 70%),
+        linear-gradient(180deg, rgba(255,255,255,0.10), transparent 24%, transparent 72%, rgba(0,0,0,0.08));
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,0.18), inset 0 0 18px rgba(255,255,255,0.055);
+    mix-blend-mode: screen;
+    transition: none;
+}
+#mi-p.show:not(.is-motion-active)::before {
+    opacity: 0;
+    transform: scale(0.82);
+}
+#mi-p.show:not(.is-motion-active)::after {
+    opacity: 0;
+    transform: scale(1);
+}
+.mi-panel-surface {
+    position: relative;
+    width: 100%;
+    overflow: hidden;
+    border-radius: inherit;
+    background:
+        radial-gradient(118% 86% at 10% -12%, rgba(255,255,255,0.18), transparent 47%),
+        radial-gradient(74% 54% at 100% 0%, rgba(var(--mi-bg-rgb),0.15), transparent 67%),
+        linear-gradient(180deg, rgba(37, 42, 51, 0.56) 0%, rgba(13, 16, 23, 0.66) 100%);
+    backdrop-filter: blur(18px) saturate(162%) brightness(1.07);
+    -webkit-backdrop-filter: blur(18px) saturate(162%) brightness(1.07);
+    border: 1px solid rgba(255,255,255,0.22);
+    box-shadow: 0 36px 84px rgba(0,0,0,0.42), 0 12px 30px rgba(0,0,0,0.18), inset 0 1px 0 rgba(255,255,255,0.24), inset 0 -1px 0 rgba(0,0,0,0.18), inset 1px 0 0 rgba(255,255,255,0.045);
+    backface-visibility: hidden;
+    transform: translateZ(0);
+    isolation: isolate;
+    contain: layout paint style;
+}
+.mi-panel-surface::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    z-index: 5;
+    border-radius: inherit;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.20), inset 1px 0 0 rgba(255,255,255,0.045), inset -1px 0 0 rgba(0,0,0,0.08), inset 0 -1px 0 rgba(255,255,255,0.035);
+    pointer-events: none;
 }
 #mi-p.show {
-    transform: scale(1);
-    transition: opacity 0.3s var(--mi-ease-out-quart), transform 0.5s var(--mi-ease-out-back), visibility 0s linear 0s;
+    opacity: 1;
+    transform: none;
+    pointer-events: auto;
+    visibility: visible;
+    transition: none;
 }
-#mi-set.show {
-    transform: scale(1) translateY(0);
-    transition: opacity 0.3s var(--mi-ease-out-quart), transform 0.5s var(--mi-ease-out-back), visibility 0s linear 0s;
+#mi-p.is-first-paint-warmup {
+    visibility: visible !important;
+    opacity: 0.001 !important;
+    transform: translate3d(0, 0, 0) !important;
+    pointer-events: none !important;
+    will-change: transform, opacity;
 }
-#mi-p.hiding { transform: scale(0.2); }
-#mi-set.hiding { transform: translateY(10px) scale(0.94); }
+#mi-p.is-first-paint-ready {
+    visibility: visible;
+    pointer-events: none;
+    will-change: transform, opacity;
+}
+#mi-p.is-motion-primed,
+#mi-p.is-motion-active {
+    will-change: transform, opacity;
+}
+#mi-p.is-motion-primed > .mi-panel-surface,
+#mi-p.is-motion-active > .mi-panel-surface {
+    will-change: transform;
+}
+#mi-p.show.is-closing {
+    pointer-events: none;
+}
+#mi-p:not(.show) .mi-view-stack {
+    opacity: 0;
+    transform: translate3d(0, var(--mi-panel-content-shift-y, 8px), 0);
+    transition: none;
+}
+#mi-p:not(.show) .mi-panel-view {
+    transition: none;
+}
+.mi-view-stack {
+    position: relative;
+    isolation: isolate;
+    height: min(680px, var(--mi-panel-available-height, calc(100vh - 96px)));
+    max-height: var(--mi-panel-available-height, calc(100vh - 96px));
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+    transform-origin: var(--mi-panel-anchor-x, calc(100% - 28px)) var(--mi-panel-anchor-y, calc(100% - 28px));
+    transition: height 0.4s var(--mi-ease-fluid);
+}
+#mi-p.is-first-paint-warmup .mi-view-stack {
+    opacity: 1 !important;
+    transform: translate3d(0, 0, 0) !important;
+    transition: none !important;
+}
+#mi-p.show.is-opening .mi-view-stack {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+}
+#mi-p.show.is-closing .mi-view-stack {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+}
+#mi-p.is-motion-active .mi-view-stack {
+    will-change: opacity, transform;
+}
+.mi-view-stack::before {
+    content: '';
+    position: absolute;
+    inset: 1px;
+    z-index: 0;
+    border-radius: 20px;
+    pointer-events: none;
+    background:
+        radial-gradient(130% 72% at 9% -12%, rgba(255,255,255,0.13), transparent 46%),
+        linear-gradient(112deg, rgba(255,255,255,0.07) 0%, transparent 18%, transparent 68%, rgba(255,255,255,0.035) 100%);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.065), inset 0 -24px 44px rgba(0,0,0,0.045);
+}
+#mi-p[data-view="settings"] .mi-view-stack {
+    height: min(476px, var(--mi-panel-available-height, calc(100vh - 96px)));
+}
+.mi-panel-view {
+    position: absolute;
+    inset: 0;
+    min-width: 0;
+    min-height: 0;
+    opacity: 0;
+    pointer-events: none;
+    visibility: hidden;
+    z-index: 1;
+    transition: opacity 0.16s var(--mi-ease-fluid), transform 0.26s var(--mi-ease-fluid), visibility 0s linear 0.2s;
+}
+#mi-main-view {
+    display: flex;
+    flex-direction: column;
+    transform: translate3d(-24px, 0, 0) scale(0.99);
+}
+#mi-set {
+    display: flex;
+    flex-direction: column;
+    padding: 16px 18px 18px;
+    overflow-y: auto;
+    scrollbar-gutter: stable;
+    transform: translate3d(28px, 0, 0) scale(0.99);
+}
+#mi-p[data-view="main"] #mi-main-view,
+#mi-p[data-view="settings"] #mi-set {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+    pointer-events: auto;
+    visibility: visible;
+    transition: opacity 0.22s var(--mi-ease-fluid), transform 0.34s var(--mi-ease-fluid), visibility 0s linear 0s;
+}
 .mi-head {
     padding: 18px 22px;
     display: flex;
@@ -4497,12 +6565,15 @@
     box-shadow: 0 0 12px var(--mi-bg), 0 0 4px var(--mi-bg);
 }
 .mi-set-head {
+    flex: 0 0 auto;
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-bottom: 14px;
+    min-height: 32px;
+    margin: 0 2px 12px;
 }
 .mi-set-head h4 { margin: 0; font-size: 15px; color: var(--mi-text-primary); font-weight: 600; }
+.mi-set-spacer { width: 28px; height: 28px; }
 .mi-status {
     font-size: 13px;
     color: var(--mi-text-secondary);
@@ -4514,8 +6585,9 @@
     font-weight: 500;
 }
 .mi-body {
+    flex: 1;
+    min-height: 0;
     padding: 12px 18px 18px;
-    max-height: min(560px, calc(100vh - 210px));
     overflow-y: auto;
     scrollbar-gutter: stable;
 }
@@ -4576,104 +6648,317 @@
     font-size: 15px;
     font-weight: 500;
     letter-spacing: -0.2px;
+    min-width: 0;
 }
 .mi-lbl em {
-    display: block;
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 4px 7px;
     font-size: 12px;
     color: var(--mi-text-secondary);
     font-style: normal;
     margin-top: 2px;
     font-weight: 400;
 }
+.mi-toggle-state {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    color: rgba(235,235,245,0.58);
+    font-size: 11px;
+    font-weight: 720;
+    white-space: nowrap;
+}
+.mi-glass-defs {
+    position: absolute;
+    width: 0;
+    height: 0;
+    overflow: hidden;
+    pointer-events: none;
+}
+.mi-toggle-state::before {
+    content: '';
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: rgba(235,235,245,0.34);
+    box-shadow: 0 0 0 2px rgba(255,255,255,0.035);
+}
+.mi-toggle-state.is-on {
+    color: color-mix(in srgb, var(--mi-bg) 76%, #ffffff);
+}
+.mi-toggle-state.is-on::before {
+    background: color-mix(in srgb, var(--mi-bg) 82%, #ffffff);
+    box-shadow: 0 0 8px rgba(var(--mi-bg-rgb),0.52);
+}
 .mi-sw {
     width: 52px;
     height: 32px;
-    background: linear-gradient(180deg, rgba(100,100,110,0.5) 0%, rgba(80,80,90,0.5) 100%);
+    background:
+        linear-gradient(180deg, rgba(112,115,124,0.42) 0%, rgba(63,66,74,0.62) 100%),
+        rgba(44,46,52,0.94);
     border-radius: 16px;
     position: relative;
     cursor: pointer;
-    transition: all 0.35s var(--mi-ease-out-quart);
+    transition: background 0.22s var(--mi-ease), border-color 0.22s var(--mi-ease), box-shadow 0.22s var(--mi-ease);
     flex-shrink: 0;
-    box-shadow: inset 0 2px 4px rgba(0,0,0,0.2), inset 0 -1px 0 rgba(255,255,255,0.05);
-    border: 1px solid rgba(255,255,255,0.08);
+    overflow: hidden;
+    box-shadow: inset 0 2px 4px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.07), 0 1px 0 rgba(255,255,255,0.035);
+    border: 1px solid rgba(255,255,255,0.115);
+}
+.mi-sw::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    background: linear-gradient(180deg, rgba(255,255,255,0.13), transparent 46%);
+    opacity: 0.36;
+    pointer-events: none;
 }
 .mi-sw::after {
     content: "";
     position: absolute;
-    top: 2px;
-    left: 2px;
-    width: 28px;
-    height: 28px;
+    top: 2.5px;
+    left: 2.5px;
+    width: 25px;
+    height: 25px;
     border-radius: 50%;
-    background: linear-gradient(180deg, #fff 0%, #f0f0f0 100%);
-    box-shadow: 0 4px 12px rgba(0,0,0,0.25), 0 2px 4px rgba(0,0,0,0.15);
-    transition: transform 0.4s var(--mi-ease-spring);
+    background:
+        radial-gradient(circle at 34% 20%, #ffffff 0%, #fbfbfc 34%, #eceef2 100%);
+    box-shadow: 0 3px 8px rgba(0,0,0,0.36), 0 1px 2px rgba(0,0,0,0.18), inset 0 1px 0 rgba(255,255,255,0.95);
+    transform: translate3d(0,0,0);
+    transform-origin: left center;
+    transition: transform 0.28s cubic-bezier(0.22, 1, 0.36, 1), box-shadow 0.18s var(--mi-ease);
 }
-.mi-sw.on { background: linear-gradient(135deg, #34d058 0%, #28a745 100%); }
-.mi-sw.on::after { transform: translateX(20px); }
-.mi-sw-compact {
-    transform: scale(0.84);
+.mi-sw.on {
+    background:
+        linear-gradient(180deg, color-mix(in srgb, var(--mi-bg) 72%, #ffffff) 0%, var(--mi-bg) 58%, color-mix(in srgb, var(--mi-bg) 78%, #000000) 100%);
+    border-color: rgba(var(--mi-bg-rgb),0.74);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.24), inset 0 -2px 4px rgba(0,0,0,0.16), 0 0 14px rgba(var(--mi-bg-rgb),0.18);
+}
+.mi-sw.on::before { opacity: 0.62; }
+.mi-sw.on::after {
+    transform: translate3d(22px,0,0);
     transform-origin: right center;
+}
+.mi-sw:active::after { transform: translate3d(0,0,0) scaleX(1.08) scaleY(0.96); }
+.mi-sw.on:active::after { transform: translate3d(22px,0,0) scaleX(1.08) scaleY(0.96); }
+.mi-sw-compact {
+    flex: 0 0 52px;
 }
 #mi-sel-wrap { margin: 0 4px 16px; position: relative; }
 #mi-sel-btn {
     width: 100%;
-    padding: 14px 16px;
-    background: linear-gradient(135deg, rgba(255,255,255,0.08) 0%, rgba(255,255,255,0.04) 100%);
-    border-radius: var(--mi-radius-md);
-    border: 1px solid rgba(255,255,255,0.1);
-    display: flex;
-    justify-content: space-between;
+    min-height: 50px;
+    padding: 0 18px 0 16px;
+    background:
+        radial-gradient(100% 160% at 0% 0%, rgba(255,255,255,0.075), transparent 44%),
+        linear-gradient(180deg, rgba(255,255,255,0.07) 0%, rgba(255,255,255,0.032) 100%);
+    border-radius: 15px;
+    border: 1px solid rgba(255,255,255,0.105);
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 24px;
     align-items: center;
+    column-gap: 12px;
     cursor: pointer;
-    transition: all 0.3s var(--mi-ease-out-quart);
+    transition: transform 0.22s var(--mi-ease-fluid), border-color 0.22s var(--mi-ease), background 0.22s var(--mi-ease), box-shadow 0.22s var(--mi-ease);
     font-size: 15px;
     color: var(--mi-text-primary);
-    white-space: nowrap;
     overflow: hidden;
-    min-height: 48px;
+    position: relative;
+    isolation: isolate;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.065), 0 8px 20px rgba(0,0,0,0.09);
 }
-#mi-sel-btn:hover { transform: translateY(-1px); border-color: rgba(255,255,255,0.18); }
-#mi-sel-btn::after {
+#mi-sel-btn:hover {
+    transform: translateY(-1px);
+    border-color: rgba(255,255,255,0.18);
+    background:
+        radial-gradient(100% 160% at 0% 0%, rgba(255,255,255,0.095), transparent 44%),
+        linear-gradient(180deg, rgba(255,255,255,0.085) 0%, rgba(255,255,255,0.04) 100%);
+}
+#mi-sel-txt {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    text-align: left;
+    position: relative;
+    z-index: 2;
+}
+#mi-sel-btn > .mi-select-chevron {
+    position: relative;
+    z-index: 2;
+    justify-self: center;
+    display: grid;
+    place-items: center;
+    width: 24px;
+    min-width: 24px;
+    max-width: 24px;
+    height: 24px;
+    min-height: 24px;
+    max-height: 24px;
+    margin: 0;
+    padding: 0;
+    color: rgba(235,235,245,0.78);
+    overflow: visible;
+    pointer-events: none;
+    transition: color 0.18s var(--mi-ease);
+}
+#mi-sel-btn > .mi-select-chevron > svg {
+    display: block;
+    width: 18px;
+    min-width: 18px;
+    max-width: 18px;
+    height: 18px;
+    min-height: 18px;
+    max-height: 18px;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    overflow: visible;
+    transform: translate3d(0,0,0);
+    transform-origin: center;
+    transition: transform 0.22s var(--mi-ease-fluid);
+}
+#mi-sel-btn > .mi-select-chevron > svg > path {
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.9;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    vector-effect: non-scaling-stroke;
+    shape-rendering: geometricPrecision;
+}
+#mi-sel-wrap.open #mi-sel-btn > .mi-select-chevron {
+    color: rgba(255,255,255,0.92);
+}
+#mi-sel-wrap.open #mi-sel-btn > .mi-select-chevron > svg {
+    transform: rotate(180deg);
+}
+#mi-sel-btn::before {
     content: '';
-    width: 8px;
-    height: 8px;
-    border-right: 2px solid var(--mi-text-tertiary);
-    border-bottom: 2px solid var(--mi-text-tertiary);
-    transform: rotate(45deg) translateY(-2px);
-    transition: transform 0.4s var(--mi-ease-spring);
+    position: absolute;
+    top: -18%;
+    bottom: -18%;
+    left: -34%;
+    width: 28%;
+    z-index: 1;
+    pointer-events: none;
+    opacity: 0;
+    background: linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.04) 18%, rgba(255,255,255,0.22) 50%, rgba(255,255,255,0.045) 82%, transparent 100%);
+    filter: blur(0.35px);
+    transform: translate3d(0,0,0);
 }
-#mi-sel-wrap.open #mi-sel-btn::after { transform: rotate(-135deg) translateY(-2px); }
+#mi-sel-btn.is-confirmed::before {
+    animation: miModelGlassSweep 0.64s cubic-bezier(0.22, 1, 0.36, 1) 1 both;
+}
 #mi-drop {
     position: absolute;
-    top: calc(100% + 8px);
-    left: 0;
-    right: 0;
+    top: 0;
+    left: 18px;
+    right: auto;
+    width: calc(100% - 36px);
     max-height: min(520px, 58vh);
     overflow: auto;
-    padding: 8px;
-    border-radius: 18px;
-    background: linear-gradient(180deg, rgba(36,37,42,0.985), rgba(30,31,36,0.985));
-    border: 1px solid rgba(255,255,255,0.105);
-    box-shadow: 0 18px 48px rgba(0, 0, 0, 0.30), 0 8px 18px rgba(0, 0, 0, 0.16);
+    padding: 9px;
+    border-radius: 20px;
+    background:
+        radial-gradient(120% 84% at 10% -14%, rgba(255,255,255,0.19), transparent 48%),
+        radial-gradient(110% 96% at 100% 110%, rgba(var(--mi-bg-rgb),0.14), transparent 58%),
+        linear-gradient(180deg, rgba(40,44,53,0.82), rgba(14,17,23,0.90));
+    backdrop-filter: blur(20px) saturate(160%) brightness(1.065);
+    -webkit-backdrop-filter: blur(20px) saturate(160%) brightness(1.065);
+    border: 1px solid rgba(255,255,255,0.23);
+    box-shadow: 0 26px 64px rgba(0, 0, 0, 0.37), 0 8px 20px rgba(0, 0, 0, 0.14), inset 0 1px 0 rgba(255,255,255,0.24), inset 0 -1px 0 rgba(0,0,0,0.17);
     opacity: 0;
-    transform: translateY(-10px) scale(0.95);
+    transform: translateY(-8px) scale(0.985);
     pointer-events: none;
     visibility: hidden;
     z-index: 100;
-    transition: opacity 0.28s var(--mi-ease), transform 0.28s var(--mi-ease), visibility 0s linear 0.28s;
+    isolation: isolate;
+    contain: layout paint style;
+    transition: opacity 0.20s var(--mi-ease-fluid), transform 0.34s var(--mi-ease-liquid), visibility 0s linear 0.34s;
 }
+#mi-drop::before,
+#mi-drop::after {
+    content: '';
+    position: absolute;
+    z-index: 0;
+    pointer-events: none;
+    border-radius: inherit;
+}
+#mi-drop::before {
+    inset: 0;
+    background:
+        linear-gradient(108deg, rgba(255,255,255,0.08), transparent 24%, transparent 72%, rgba(255,255,255,0.035)),
+        radial-gradient(90% 64% at 50% 0%, rgba(255,255,255,0.06), transparent 72%);
+}
+#mi-drop::after {
+    inset: 1px;
+    border: 1px solid rgba(255,255,255,0.035);
+    box-shadow: inset 0 -20px 32px rgba(0,0,0,0.055);
+}
+#mi-drop > * { position: relative; z-index: 1; }
+#mi-drop[data-placement="above"] { transform: translateY(8px) scale(0.985); }
+#mi-drop[data-placement="overlay"] { transform: scale(0.985); }
 #mi-drop.show {
     opacity: 1;
     transform: translateY(0) scale(1);
     pointer-events: auto;
     visibility: visible;
-    transition: opacity 0.35s var(--mi-ease-out-quart), transform 0.35s var(--mi-ease-out-back), visibility 0s linear 0s;
+    transition: opacity 0.24s var(--mi-ease-fluid), transform 0.46s var(--mi-ease-liquid), visibility 0s linear 0s;
 }
-#mi-drop.hiding {
-    opacity: 0;
-    transform: translateY(-8px) scale(0.96);
-    pointer-events: none;
+#mi-drop[data-compact="true"] {
+    padding: 6px;
+    border-radius: 14px;
+}
+#mi-drop[data-compact="true"] .mi-menu-search {
+    gap: 0;
+    margin-bottom: 5px;
+    padding: 4px;
+    border-radius: 12px;
+}
+#mi-drop[data-compact="true"] .mi-menu-search-head,
+#mi-drop[data-compact="true"] .mi-menu-search-hint {
+    display: none;
+}
+#mi-drop[data-compact="true"] .mi-menu-search-box {
+    min-height: 36px;
+    border-radius: 9px;
+}
+#mi-drop[data-compact="true"] .mi-menu-options {
+    gap: 5px;
+}
+#mi-drop[data-compact="true"] .mi-opt-grp,
+#mi-drop[data-compact="true"] .mi-family-head {
+    display: none;
+}
+#mi-drop[data-compact="true"] .mi-menu-section,
+#mi-drop[data-compact="true"] .mi-family {
+    gap: 3px;
+}
+#mi-drop[data-compact="true"] .mi-family {
+    padding: 2px;
+    border-radius: 10px;
+}
+#mi-drop[data-compact="true"] .mi-opt {
+    min-height: 40px;
+    padding: 7px 9px;
+}
+#mi-drop[data-compact="true"] .mi-opt .sub,
+#mi-drop[data-compact="true"] .mi-opt .meta {
+    display: none;
+}
+#mi-drop[data-compact="true"] .mi-agent-section-bottom {
+    margin-top: 0;
+    padding-top: 0;
+    border-top: 0;
+}
+.mi-menu-options {
+    display: grid;
+    gap: 7px;
+    padding: 1px 1px 5px;
 }
 .mi-menu-search {
     position: sticky;
@@ -4681,19 +6966,20 @@
     z-index: 3;
     display: grid;
     gap: 8px;
-    margin: 0 0 10px;
+    margin: 0 0 11px;
     padding: 11px;
     border-radius: 16px;
     background:
-        radial-gradient(circle at 18% 0%, rgba(var(--mi-bg-rgb), 0.16), transparent 42%),
-        linear-gradient(180deg, rgba(255,255,255,0.08), rgba(255,255,255,0.038));
-    border: 1px solid rgba(255,255,255,0.10);
-    box-shadow: 0 10px 24px rgba(0,0,0,0.18), inset 0 1px 0 rgba(255,255,255,0.08);
-    backdrop-filter: blur(18px) saturate(140%);
+        radial-gradient(120% 118% at 12% -18%, rgba(255,255,255,0.13), transparent 48%),
+        linear-gradient(180deg, rgba(59,64,75,0.54), rgba(31,35,43,0.48));
+    border: 1px solid rgba(255,255,255,0.145);
+    box-shadow: 0 10px 24px rgba(0,0,0,0.14), inset 0 1px 0 rgba(255,255,255,0.15), inset 0 -1px 0 rgba(0,0,0,0.07);
+    backdrop-filter: blur(12px) saturate(130%);
+    -webkit-backdrop-filter: blur(12px) saturate(130%);
 }
 .mi-menu-search:focus-within {
-    border-color: rgba(var(--mi-bg-rgb), 0.58);
-    box-shadow: 0 0 0 1px rgba(var(--mi-bg-rgb), 0.32), 0 14px 30px rgba(0,0,0,0.22);
+    border-color: rgba(var(--mi-bg-rgb), 0.54);
+    box-shadow: 0 0 0 1px rgba(var(--mi-bg-rgb), 0.19), 0 14px 30px rgba(0,0,0,0.18), inset 0 1px 0 rgba(255,255,255,0.16);
 }
 .mi-menu-search-head {
     display: flex;
@@ -4702,7 +6988,7 @@
     gap: 10px;
 }
 .mi-menu-search-title {
-    color: rgba(255,255,255,0.92);
+    color: rgba(255,255,255,0.94);
     font-size: 12px;
     font-weight: 820;
     letter-spacing: -0.01em;
@@ -4728,14 +7014,15 @@
     min-height: 42px;
     padding: 0 7px 0 6px;
     border-radius: 12px;
-    background: rgba(8, 10, 14, 0.38);
-    border: 1px solid rgba(255,255,255,0.09);
+    background: rgba(7, 9, 13, 0.23);
+    border: 1px solid rgba(255,255,255,0.12);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.045), inset 0 -1px 0 rgba(0,0,0,0.10);
     transition: border-color 0.18s var(--mi-ease), background 0.18s var(--mi-ease), box-shadow 0.18s var(--mi-ease);
 }
 .mi-menu-search:focus-within .mi-menu-search-box {
-    background: rgba(8, 10, 14, 0.52);
-    border-color: rgba(var(--mi-bg-rgb), 0.48);
-    box-shadow: inset 0 0 0 1px rgba(var(--mi-bg-rgb), 0.14);
+    background: rgba(7, 9, 13, 0.34);
+    border-color: rgba(var(--mi-bg-rgb), 0.52);
+    box-shadow: inset 0 0 0 1px rgba(var(--mi-bg-rgb), 0.13), 0 0 0 3px rgba(var(--mi-bg-rgb),0.055);
 }
 .mi-menu-search-icon {
     width: 26px;
@@ -4744,11 +7031,18 @@
     align-items: center;
     justify-content: center;
     border-radius: 9px;
-    background: rgba(var(--mi-bg-rgb), 0.18);
-    color: rgba(255,255,255,0.86);
-    font-size: 15px;
-    font-weight: 900;
-    font-family: var(--mi-font-mono);
+    background: linear-gradient(145deg, rgba(255,255,255,0.16), rgba(var(--mi-bg-rgb),0.13));
+    border: 1px solid rgba(255,255,255,0.10);
+    color: rgba(255,255,255,0.90);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.14);
+}
+.mi-menu-search-icon svg {
+    width: 15px;
+    height: 15px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+    stroke-linecap: round;
 }
 #mi-menu-search {
     width: 100%;
@@ -4783,10 +7077,7 @@
     transform: scale(1);
     pointer-events: auto;
 }
-.mi-menu-search-clear:hover {
-    background: rgba(255,255,255,0.13);
-    color: rgba(255,255,255,0.9);
-}
+.mi-menu-search-clear:hover { background: rgba(255,255,255,0.15); color: rgba(255,255,255,0.94); }
 .mi-menu-search-hint {
     color: rgba(235,235,245,0.50);
     font-size: 11px;
@@ -4805,8 +7096,8 @@
     padding: 0 5px;
     border-radius: 6px;
     color: rgba(255,255,255,0.88);
-    background: rgba(var(--mi-bg-rgb), 0.20);
-    border: 1px solid rgba(var(--mi-bg-rgb), 0.22);
+    background: rgba(255,255,255,0.085);
+    border: 1px solid rgba(255,255,255,0.12);
     font: 800 11px/1 var(--mi-font-mono);
 }
 .mi-menu-empty {
@@ -4841,43 +7132,88 @@
     position: relative;
     min-height: 40px;
     overflow: hidden;
+    isolation: isolate;
 }
 .mi-opt::before {
     content: '';
     position: absolute;
-    left: 0;
-    top: 0;
-    bottom: 0;
-    width: 3px;
-    background: var(--mi-bg);
-    transform: scaleY(0);
-    transition: transform 0.3s var(--mi-ease-out-back);
-    border-radius: 0 2px 2px 0;
+    inset: 0;
+    z-index: 0;
+    border-radius: inherit;
+    background:
+        radial-gradient(90% 140% at 0% 0%, rgba(255,255,255,0.105), transparent 52%),
+        linear-gradient(90deg, rgba(var(--mi-bg-rgb),0.13), rgba(255,255,255,0.025) 68%, transparent);
+    opacity: 0;
+    transition: opacity 0.2s var(--mi-ease);
+    pointer-events: none;
 }
-.mi-opt:hover::before { transform: scaleY(1); }
+.mi-opt > * { position: relative; z-index: 1; }
+.mi-opt:hover::before { opacity: 0.62; }
 .mi-opt:hover {
     background: rgba(255,255,255,0.1);
-    transform: translateX(4px);
-    padding-left: 16px;
+    transform: none;
 }
 .mi-opt.active {
-    background: linear-gradient(135deg, var(--mi-bg) 0%, color-mix(in srgb, var(--mi-bg) 80%, #000) 100%);
-    border-color: transparent;
-    box-shadow: 0 4px 16px rgba(0,0,0,0.2), inset 0 1px 0 rgba(255,255,255,0.2);
-    transform: translateX(2px);
+    border-color: rgba(var(--mi-bg-rgb),0.38);
+    transform: none;
 }
 .mi-opt.active::before {
-    transform: scaleY(1);
-    background: rgba(255,255,255,0.3);
+    opacity: 1;
+}
+.mi-custom-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 38px;
+    gap: 5px;
+    align-items: stretch;
+    min-width: 0;
+}
+.mi-custom-row .mi-opt {
+    width: 100%;
+    min-width: 0;
+}
+.mi-custom-remove {
+    width: 38px;
+    min-width: 38px;
+    min-height: 40px;
+    display: grid;
+    place-items: center;
+    border-radius: 12px;
+    color: rgba(235,235,245,0.46);
+    background: linear-gradient(180deg, rgba(255,255,255,0.052), rgba(255,255,255,0.018));
+    border: 1px solid rgba(255,255,255,0.065);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.055);
+    cursor: pointer;
+    transition: color 0.18s var(--mi-ease), background 0.18s var(--mi-ease), border-color 0.18s var(--mi-ease), transform 0.16s var(--mi-ease-fluid);
+}
+.mi-custom-remove svg {
+    width: 15px;
+    height: 15px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.7;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    pointer-events: none;
+}
+.mi-custom-remove:hover {
+    color: #ff8d87;
+    background: linear-gradient(180deg, rgba(255,105,97,0.16), rgba(255,69,58,0.07));
+    border-color: rgba(255,105,97,0.24);
+    transform: translateY(-0.5px);
+}
+.mi-custom-remove:active { transform: scale(0.94); }
+.mi-custom-remove:focus-visible {
+    outline: 2px solid color-mix(in srgb, #ff6961 70%, #ffffff);
+    outline-offset: 1px;
 }
 .mi-opt.official {
-    border-color: rgba(255, 214, 10, 0.16);
-    background: linear-gradient(135deg, rgba(255, 214, 10, 0.035) 0%, rgba(255, 159, 10, 0.014) 100%);
-    box-shadow: inset 0 0 0 1px rgba(255, 214, 10, 0.035);
+    border-color: rgba(255,255,255,0.075);
+    background: rgba(255,255,255,0.016);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.025);
 }
 .mi-opt.official:hover {
-    border-color: rgba(255, 214, 10, 0.34);
-    box-shadow: 0 8px 18px rgba(255, 214, 10, 0.055), inset 0 0 0 1px rgba(255, 214, 10, 0.08);
+    border-color: rgba(255,255,255,0.16);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.08);
 }
 .mi-opt.mi-agent-opt {
     border-color: rgba(var(--mi-bg-rgb), 0.34);
@@ -4893,7 +7229,44 @@
     overflow: hidden;
     text-overflow: ellipsis;
     display: block;
-    font-weight: 600;
+    font-weight: 700;
+    letter-spacing: -0.012em;
+}
+.mi-opt-title-row {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    min-width: 0;
+}
+.mi-opt-title-row .txt {
+    min-width: 0;
+    flex: 0 1 auto;
+}
+.mi-source-state {
+    display: inline-flex;
+    flex: none;
+    align-items: center;
+    gap: 5px;
+    min-height: 20px;
+    padding: 0 7px 0 6px;
+    border: 1px solid rgba(161, 255, 207, 0.27);
+    border-radius: 999px;
+    color: rgba(211, 255, 229, 0.98);
+    background:
+        linear-gradient(180deg, rgba(255,255,255,0.17), rgba(255,255,255,0.035)),
+        rgba(52, 211, 153, 0.12);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.17), inset 0 -1px 0 rgba(0,0,0,0.14);
+    font: 760 10px/1 var(--mi-font);
+    letter-spacing: 0.025em;
+    white-space: nowrap;
+}
+.mi-source-dot {
+    width: 6px;
+    height: 6px;
+    flex: none;
+    border-radius: 50%;
+    background: #79efb1;
+    box-shadow: 0 0 0 1px rgba(106, 244, 171, 0.12), inset 0 1px 1px rgba(255,255,255,0.62);
 }
 .mi-opt .sub {
     white-space: nowrap;
@@ -4973,14 +7346,18 @@
 }
 .mi-opt.active {
     transform: none;
-    background: linear-gradient(135deg, rgba(var(--mi-bg-rgb), 0.18) 0%, rgba(var(--mi-bg-rgb), 0.1) 100%);
-    border-color: rgba(var(--mi-bg-rgb), 0.4);
-    box-shadow: 0 8px 18px rgba(0,0,0,0.14);
+    background:
+        linear-gradient(180deg, rgba(255,255,255,0.07), rgba(255,255,255,0.025)),
+        rgba(var(--mi-bg-rgb),0.12);
+    border-color: rgba(var(--mi-bg-rgb), 0.44);
+    box-shadow: 0 8px 18px rgba(0,0,0,0.15), inset 0 1px 0 rgba(255,255,255,0.1), 0 0 0 1px rgba(var(--mi-bg-rgb),0.06);
 }
 .mi-opt.official.active {
-    background: linear-gradient(135deg, rgba(255, 214, 10, 0.085) 0%, rgba(255, 159, 10, 0.035) 100%);
-    border-color: rgba(255, 214, 10, 0.38);
-    box-shadow: 0 0 0 1px rgba(255, 214, 10, 0.08), 0 8px 18px rgba(0,0,0,0.16), inset 0 1px 0 rgba(255,255,255,0.075);
+    background:
+        linear-gradient(180deg, rgba(255,255,255,0.10), rgba(255,255,255,0.03)),
+        rgba(var(--mi-bg-rgb),0.12);
+    border-color: rgba(var(--mi-bg-rgb),0.42);
+    box-shadow: 0 8px 18px rgba(0,0,0,0.15), inset 0 1px 0 rgba(255,255,255,0.18), inset 0 -1px 0 rgba(0,0,0,0.15);
 }
 .mi-opt.mi-agent-opt.active {
     background: linear-gradient(135deg, rgba(var(--mi-bg-rgb), 0.16) 0%, rgba(var(--mi-bg-rgb), 0.075) 100%);
@@ -5031,7 +7408,7 @@
     color: rgba(255,255,255,0.74);
     font-size: 12px;
     cursor: pointer;
-    transition: all 0.3s var(--mi-ease-out-quart);
+    transition: transform 0.2s var(--mi-ease-fluid), border-color 0.2s var(--mi-ease), background 0.2s var(--mi-ease), color 0.2s var(--mi-ease);
 }
 .mi-chip:hover { transform: translateY(-1px); border-color: rgba(255,255,255,0.16); color: var(--mi-text-primary); }
 .mi-chip.active { background: rgba(var(--mi-bg-rgb), 0.18); border-color: rgba(var(--mi-bg-rgb), 0.38); color: var(--mi-text-primary); }
@@ -5041,6 +7418,17 @@
 .mi-debug-row {
     align-items: center;
 }
+#mi-set .mi-color-row,
+#mi-set #mi-lang-row,
+#mi-set .mi-debug-row {
+    flex: 0 0 auto;
+    min-height: 48px;
+    margin: 0 0 8px;
+    padding: 0 12px;
+    border-radius: 14px;
+    background: rgba(255,255,255,0.025);
+    border: 1px solid rgba(255,255,255,0.065);
+}
 .mi-color-row label,
 #mi-lang-row label,
 .mi-debug-row label {
@@ -5049,7 +7437,38 @@
     font-weight: 600;
 }
 .mi-debug-row {
-    margin-top: 12px;
+    margin-top: 0;
+}
+.mi-settings-note {
+    display: grid;
+    gap: 4px;
+    margin-top: auto;
+    padding: 12px 13px;
+    border-radius: 16px;
+    color: var(--mi-text-primary);
+    background:
+        radial-gradient(circle at 0% 0%, rgba(var(--mi-bg-rgb), 0.12), transparent 58%),
+        rgba(255,255,255,0.025);
+    border: 1px solid rgba(var(--mi-bg-rgb), 0.18);
+}
+.mi-settings-note strong {
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: -0.1px;
+}
+.mi-settings-note span {
+    color: rgba(235,235,245,0.58);
+    font-size: 11px;
+    line-height: 1.45;
+}
+.mi-settings-note .mi-link-btn {
+    justify-self: start;
+    min-height: 28px;
+    margin-top: 3px;
+    padding: 0 9px;
+    border-color: rgba(255,255,255,0.07);
+    background: rgba(255,255,255,0.035);
+    font-size: 11px;
 }
 .mi-inp {
     flex: 1;
@@ -5060,10 +7479,10 @@
     background: linear-gradient(180deg, rgba(0,0,0,0.25) 0%, rgba(0,0,0,0.2) 100%);
     color: var(--mi-text-primary);
     outline: none;
-    transition: all 0.3s var(--mi-ease-out-quart);
+    transition: border-color 0.22s var(--mi-ease), box-shadow 0.22s var(--mi-ease), background 0.22s var(--mi-ease);
     min-height: 48px;
 }
-.mi-inp::placeholder { color: var(--mi-text-tertiary); }
+.mi-inp::placeholder { color: var(--mi-text-placeholder); }
 .mi-inp:focus { border-color: var(--mi-bg); box-shadow: 0 0 0 4px rgba(0,122,255,0.15), 0 0 20px -5px var(--mi-bg); }
 .mi-lang-picker {
     position: relative;
@@ -5111,30 +7530,55 @@
 }
 .mi-lang-menu {
     position: absolute;
-    top: calc(100% + 8px);
-    right: 0;
-    min-width: 100%;
+    top: 0;
+    left: 18px;
+    right: auto;
+    width: 148px;
+    max-height: 220px;
     display: grid;
     gap: 4px;
     padding: 6px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
     border-radius: 16px;
     border: 1px solid rgba(255,255,255,0.1);
     background: rgba(26,29,36,0.98);
     box-shadow: 0 20px 40px rgba(0,0,0,0.28);
     opacity: 0;
+    visibility: hidden;
     pointer-events: none;
     transform: translateY(-6px) scale(0.98);
-    transition: opacity 0.18s var(--mi-ease), transform 0.18s var(--mi-ease);
-    z-index: 6;
+    transform-origin: top right;
+    transition:
+        opacity 0.18s var(--mi-ease),
+        transform 0.18s var(--mi-ease),
+        visibility 0s linear 0.18s;
+    z-index: 110;
 }
-.mi-lang-picker.open .mi-lang-menu {
+.mi-lang-menu[data-placement=above] {
+    transform: translateY(6px) scale(0.98);
+}
+.mi-lang-menu[data-placement=overlay] {
+    transform: scale(0.985);
+}
+.mi-lang-menu.show {
     opacity: 1;
+    visibility: visible;
     pointer-events: auto;
     transform: translateY(0) scale(1);
+    transition:
+        opacity 0.18s var(--mi-ease),
+        transform 0.18s var(--mi-ease),
+        visibility 0s linear 0s;
 }
-.mi-lang-option {
+.mi-lang-menu[data-compact=true] {
+    border-radius: 14px;
+    scrollbar-gutter: stable;
+}
+#mi .mi-lang-option {
     width: 100%;
     padding: 10px 12px;
+    min-height: 44px;
     border-radius: 12px;
     border: 1px solid transparent;
     background: transparent;
@@ -5144,10 +7588,10 @@
     cursor: pointer;
     transition: background 0.18s var(--mi-ease), border-color 0.18s var(--mi-ease);
 }
-.mi-lang-option:hover {
+#mi .mi-lang-option:hover {
     background: rgba(255,255,255,0.06);
 }
-.mi-lang-option.active {
+#mi .mi-lang-option.active {
     background: rgba(var(--mi-bg-rgb), 0.16);
     border-color: rgba(var(--mi-bg-rgb), 0.3);
 }
@@ -5155,7 +7599,7 @@
     border: 1px solid rgba(255,255,255,0.1);
     color: var(--mi-text-primary);
     cursor: pointer;
-    transition: all 0.3s var(--mi-ease-out-quart);
+    transition: transform 0.22s var(--mi-ease-fluid), border-color 0.22s var(--mi-ease), background 0.22s var(--mi-ease), color 0.22s var(--mi-ease), box-shadow 0.22s var(--mi-ease);
 }
 .mi-icon-btn {
     width: 48px;
@@ -5249,200 +7693,181 @@
     transform: rotate(-10deg) scale(1.08);
 }
 .mi-grid {
-    display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: 8px;
     margin: 0 4px 16px;
+}
+.mi-effort-track {
+    --mi-effort-index: 0;
+    --mi-effort-glass-x: 12.5%;
+    position: relative;
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 0;
+    min-height: 56px;
+    padding: 4px;
+    overflow: hidden;
+    isolation: isolate;
+    contain: layout paint;
+    border-radius: 16px;
+    background:
+        radial-gradient(54% 168% at var(--mi-effort-glass-x) 48%, rgba(var(--mi-bg-rgb),0.115), transparent 66%),
+        linear-gradient(120deg, rgba(255,255,255,0.070), transparent 37%, rgba(255,255,255,0.024) 74%, rgba(0,0,0,0.10)),
+        linear-gradient(180deg, rgba(255,255,255,0.038), rgba(0,0,0,0.075)),
+        rgba(8,11,16,0.34);
+    border: 1px solid rgba(255,255,255,0.118);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.095), inset 0 -1px 0 rgba(0,0,0,0.29), 0 10px 24px rgba(0,0,0,0.11);
+    transition: opacity 0.2s var(--mi-ease), border-color 0.2s var(--mi-ease);
+}
+.mi-effort-track::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+    border-radius: inherit;
+    background:
+        linear-gradient(180deg, rgba(255,255,255,0.075), transparent 34%),
+        linear-gradient(90deg, rgba(255,255,255,0.028), transparent 24%, transparent 76%, rgba(255,255,255,0.018));
+}
+.mi-effort-track::after {
+    content: '';
+    position: absolute;
+    inset: 1px;
+    z-index: 0;
+    pointer-events: none;
+    border-radius: 15px;
+    background: radial-gradient(92% 64% at 50% 112%, rgba(0,0,0,0.13), transparent 70%);
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,0.028);
+}
+.mi-effort-track.is-disabled {
+    opacity: 0.62;
+    border-color: rgba(255,255,255,0.065);
+}
+.mi-effort-lens {
+    position: absolute;
+    top: 4px;
+    bottom: 4px;
+    left: 4px;
+    z-index: 1;
+    width: calc((100% - 8px) / 4);
+    pointer-events: none;
+    transform: translate3d(calc(var(--mi-effort-index) * 100%), 0, 0);
+    will-change: transform;
+    transition: transform 0.42s var(--mi-ease-liquid);
+}
+.mi-effort-lens-material {
+    display: block;
+    position: relative;
+    width: 100%;
+    height: 100%;
+    border-radius: 12px;
+    overflow: hidden;
+    isolation: isolate;
+    background:
+        radial-gradient(118% 92% at 18% -18%, rgba(255,255,255,0.34) 0%, rgba(255,255,255,0.105) 30%, transparent 49%),
+        linear-gradient(180deg, rgba(255,255,255,0.082), rgba(255,255,255,0.018) 52%, rgba(0,0,0,0.038)),
+        rgba(255,255,255,0.026);
+    border: 1px solid rgba(255,255,255,0.28);
+    box-shadow:
+        0 7px 18px rgba(0,0,0,0.20),
+        inset 0 1px 0 rgba(255,255,255,0.34),
+        inset 0 -1px 0 rgba(0,0,0,0.24),
+        inset 1px 0 0 rgba(255,255,255,0.10),
+        inset -1px 0 0 rgba(0,0,0,0.12);
+    backdrop-filter: blur(14px) saturate(152%) brightness(1.07);
+    -webkit-backdrop-filter: blur(14px) saturate(152%) brightness(1.07);
+    transition: transform 0.12s var(--mi-ease), box-shadow 0.16s var(--mi-ease);
+}
+.mi-effort-lens-material::before {
+    content: '';
+    position: absolute;
+    inset: 1px;
+    border-radius: 11px;
+    z-index: 0;
+    background:
+        linear-gradient(110deg, rgba(255,255,255,0.36) 0%, rgba(255,255,255,0.105) 12%, transparent 29%, transparent 74%, rgba(255,255,255,0.055) 100%),
+        radial-gradient(100% 86% at 54% -24%, rgba(255,255,255,0.17), transparent 54%);
+    box-shadow: inset 1px 0 0 rgba(255,255,255,0.15), inset -1px 0 0 rgba(0,0,0,0.10), inset 0 1px 0 rgba(255,255,255,0.10);
+}
+.mi-effort-lens-material::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    pointer-events: none;
+    border-radius: inherit;
+    background:
+        linear-gradient(90deg, rgba(255,255,255,0.14), transparent 17%, transparent 83%, rgba(255,255,255,0.10)),
+        linear-gradient(180deg, transparent 55%, rgba(0,0,0,0.10));
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,0.075);
+}
+.mi-grid.is-pressing .mi-effort-lens-material,
+.mi-effort-track:has(.mi-g-item:active) .mi-effort-lens-material {
+    transform: scaleX(1.018) scaleY(0.964);
+    box-shadow: 0 4px 13px rgba(0,0,0,0.20), inset 0 1px 0 rgba(255,255,255,0.27), inset 0 -1px 0 rgba(0,0,0,0.25);
 }
 .mi-g-item {
     position: relative;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: space-between;
-    background: linear-gradient(180deg, rgba(255,255,255,0.04) 0%, rgba(255,255,255,0.02) 100%);
+    z-index: 2;
+    min-width: 0;
+    min-height: 48px;
+    display: grid;
+    place-items: center;
+    padding: 8px 4px;
+    background: transparent;
     border: 1px solid transparent;
-    border-radius: 18px;
-    padding: 14px 8px 16px;
+    border-radius: 12px;
     text-align: center;
     cursor: pointer;
-    transition: transform 0.28s var(--mi-ease-out-quart), border-color 0.28s var(--mi-ease), background 0.28s var(--mi-ease), box-shadow 0.28s var(--mi-ease);
-    color: var(--mi-text-secondary);
-    min-height: 150px;
-    overflow: hidden;
-}
-.mi-g-item:hover:not(:disabled) {
-    transform: translateY(-2px);
-    background: linear-gradient(180deg, rgba(255,255,255,0.05) 0%, rgba(255,255,255,0.025) 100%);
-    box-shadow: 0 10px 24px rgba(0,0,0,0.14);
+    transition: color 0.16s var(--mi-ease), opacity 0.18s var(--mi-ease), transform 0.1s var(--mi-ease);
+    color: rgba(235,235,245,0.62);
 }
 .mi-g-item.active {
-    background: linear-gradient(180deg, rgba(var(--mi-bg-rgb), 0.22) 0%, rgba(var(--mi-bg-rgb), 0.14) 100%);
-    color: #fff;
-    box-shadow: 0 12px 28px rgba(0,0,0,0.18);
+    background: transparent;
+    border-color: transparent;
+    color: #ffffff;
+    font-weight: 720;
+    text-shadow: 0 1px 7px rgba(0,0,0,0.40);
+    box-shadow: none;
+}
+.mi-g-item:focus-visible {
+    outline: none;
+    box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--mi-bg) 72%, #ffffff);
 }
 .mi-g-item:disabled {
-    opacity: 0.35;
+    opacity: 0.72;
     cursor: not-allowed;
 }
-.mi-g-headline,
-.mi-g-top,
-.mi-g-main,
-.mi-g-sub,
-.mi-g-meter,
-.mi-g-frame-progress {
-    position: relative;
-    z-index: 1;
-}
-.mi-g-headline {
+.mi-g-main {
     width: 100%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 0;
-}
-.mi-g-top {
-    max-width: 100%;
-    font-size: 9px;
-    line-height: 1;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-    color: rgba(235, 235, 245, 0.42);
-    font-weight: 700;
-    text-align: center;
+    font-size: 12px;
+    line-height: 1.15;
+    font-weight: 680;
+    letter-spacing: -0.01em;
+    color: inherit;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-}
-.mi-g-main {
-    margin-top: 10px;
-    width: 100%;
-    font-size: 15px;
-    line-height: 1.2;
-    font-weight: 700;
-    letter-spacing: -0.02em;
-    color: rgba(255,255,255,0.92);
-    white-space: normal;
-    word-break: keep-all;
-    overflow-wrap: anywhere;
     text-align: center;
 }
-.mi-g-sub {
-    margin-top: 6px;
-    width: 100%;
-    font-size: 10px;
-    line-height: 1.4;
-    color: rgba(235, 235, 245, 0.52);
-    font-weight: 500;
-    min-height: 40px;
-    display: -webkit-box;
-    -webkit-box-orient: vertical;
-    -webkit-line-clamp: 2;
-    overflow: hidden;
-    word-break: keep-all;
-    overflow-wrap: anywhere;
+.mi-effort-detail {
+    min-height: 16px;
+    margin: 8px 5px 0;
+    color: rgba(235,235,245,0.64);
+    font-size: 11.5px;
+    line-height: 1.35;
     text-align: center;
-}
-.mi-g-meter {
-    margin-top: auto;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 0;
-}
-.mi-g-icon-wrap {
-    width: 24px;
-    height: 24px;
-    flex: 0 0 24px;
-    display: grid;
-    place-items: center;
-}
-.mi-g-frame-progress {
-    position: absolute;
-    inset: 0;
-    width: 100%;
-    height: 100%;
-    pointer-events: none;
-}
-.mi-g-frame-bg,
-.mi-g-frame-fg {
-    fill: none;
-    stroke-width: 1.35;
-}
-.mi-g-frame-bg {
-    stroke: rgba(255,255,255,0.08);
-}
-.mi-g-frame-fg {
-    stroke: rgba(var(--mi-bg-rgb), 0.44);
-    stroke-linecap: round;
-    transition: stroke-dasharray 0.42s var(--mi-ease-out-quart), stroke 0.28s var(--mi-ease), opacity 0.28s var(--mi-ease);
-    opacity: 0.9;
-}
-.mi-g-stopwatch {
-    width: 20px;
-    height: 20px;
-    display: block;
-}
-.mi-g-shell {
-    fill: none;
-    stroke: rgba(255,255,255,0.72);
-    stroke-width: 1.8;
-}
-.mi-g-progress {
-    fill: none;
-    stroke: rgba(255,255,255,0.96);
-    stroke-width: 2.1;
-    stroke-linecap: round;
-    transform: rotate(-90deg);
-    transform-origin: 11px 11px;
-}
-.mi-g-cap,
-.mi-g-stem,
-.mi-g-hand,
-.mi-g-hand-secondary,
-.mi-g-center,
-.mi-g-inner {
-    fill: none;
-    stroke: rgba(255,255,255,0.96);
-    stroke-linecap: round;
-    stroke-linejoin: round;
-}
-.mi-g-cap { stroke-width: 1.8; }
-.mi-g-stem { stroke-width: 1.6; }
-.mi-g-hand { stroke-width: 1.9; }
-.mi-g-hand-secondary { stroke-width: 1.3; opacity: 0.78; }
-.mi-g-center { stroke-width: 2.4; }
-.mi-g-inner { stroke-width: 1.3; opacity: 0.34; }
-.mi-g-dot { display: none; }
-.mi-g-item.active .mi-g-top {
-    color: rgba(255,255,255,0.68);
-}
-.mi-g-item.active .mi-g-main {
-    color: #ffffff;
-}
-.mi-g-item.active .mi-g-sub {
-    color: rgba(255,255,255,0.78);
-}
-.mi-g-item.active .mi-g-progress,
-.mi-g-item.active .mi-g-cap,
-.mi-g-item.active .mi-g-stem,
-.mi-g-item.active .mi-g-hand,
-.mi-g-item.active .mi-g-hand-secondary,
-.mi-g-item.active .mi-g-center {
-    stroke: #ffffff;
-}
-.mi-g-item.active .mi-g-frame-fg {
-    stroke: rgba(var(--mi-bg-rgb), 0.96);
-    filter: drop-shadow(0 0 12px rgba(var(--mi-bg-rgb), 0.22));
 }
 .mi-diagnostics {
     margin: 14px 4px 0;
     padding: 0;
-    border-radius: 16px;
-    background: rgba(255,255,255,0.026);
-    border: 1px solid rgba(255,255,255,0.065);
+    border-radius: 17px;
+    background:
+        linear-gradient(180deg, rgba(255,255,255,0.032), rgba(255,255,255,0.018)),
+        rgba(8,10,14,0.13);
+    border: 1px solid rgba(255,255,255,0.072);
     overflow: hidden;
     transition: border-color 0.22s var(--mi-ease), background 0.22s var(--mi-ease), box-shadow 0.22s var(--mi-ease);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.035);
 }
 .mi-diagnostics.has-error {
     border-color: rgba(248, 113, 113, 0.28);
@@ -5450,12 +7875,12 @@
 }
 .mi-diag-toggle {
     width: 100%;
-    min-height: 54px;
+    min-height: 56px;
     display: grid;
-    grid-template-columns: minmax(0, auto) minmax(0, 1fr) 18px;
+    grid-template-columns: max-content minmax(0, 1fr) 20px;
     align-items: center;
-    gap: 10px;
-    padding: 12px 13px;
+    column-gap: 12px;
+    padding: 0 16px;
     border: 0;
     background: transparent;
     color: inherit;
@@ -5465,16 +7890,24 @@
 .mi-diag-toggle:hover {
     background: rgba(255,255,255,0.035);
 }
+.mi-diag-toggle:focus-visible {
+    outline: none;
+    box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--mi-bg) 72%, #ffffff);
+}
 .mi-diag-title {
-    color: rgba(235,235,245,0.8);
-    font-size: 12px;
-    font-weight: 760;
+    min-width: 0;
+    max-width: 118px;
+    color: rgba(235,235,245,0.84);
+    font-size: 12.5px;
+    font-weight: 690;
     white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 .mi-diag-summary {
     min-width: 0;
-    color: rgba(235,235,245,0.5);
-    font-size: 11px;
+    color: rgba(235,235,245,0.56);
+    font-size: 11.5px;
     text-align: right;
     white-space: nowrap;
     overflow: hidden;
@@ -5483,13 +7916,15 @@
 .mi-diag-chevron {
     width: 8px;
     height: 8px;
-    border-right: 2px solid rgba(235,235,245,0.5);
-    border-bottom: 2px solid rgba(235,235,245,0.5);
-    transform: rotate(45deg) translateY(-2px);
-    transition: transform 0.22s var(--mi-ease), border-color 0.22s var(--mi-ease);
+    justify-self: center;
+    border-right: 1.75px solid rgba(235,235,245,0.62);
+    border-bottom: 1.75px solid rgba(235,235,245,0.62);
+    transform: rotate(45deg);
+    transform-origin: center;
+    transition: transform 0.22s var(--mi-ease-fluid), border-color 0.22s var(--mi-ease);
 }
 .mi-diagnostics.open .mi-diag-chevron {
-    transform: rotate(-135deg) translateY(-1px);
+    transform: rotate(-135deg);
     border-color: rgba(235,235,245,0.82);
 }
 .mi-diag-panel {
@@ -5511,7 +7946,7 @@
     grid-template-columns: auto minmax(0, 1fr);
     gap: 7px 12px;
     align-items: center;
-    padding: 11px 13px 0;
+    padding: 12px 16px 0;
 }
 .mi-diag-grid span {
     color: rgba(235,235,245,0.46);
@@ -5554,7 +7989,7 @@
     border: 1px solid rgba(255,255,255,0.08);
     margin: 0 4px;
     color: var(--mi-text-primary);
-    transition: all 0.35s var(--mi-ease-out-quart);
+    transition: border-color 0.22s var(--mi-ease), background 0.22s var(--mi-ease), box-shadow 0.24s var(--mi-ease-fluid);
 }
 .mi-box:hover { border-color: rgba(255,255,255,0.12); box-shadow: 0 8px 32px rgba(0,0,0,0.15); }
 .mi-box-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
@@ -5633,7 +8068,7 @@
     gap: 8px;
     padding: 10px 14px;
     border-radius: var(--mi-radius-md);
-    transition: all 0.3s var(--mi-ease-out-quart);
+    transition: transform 0.2s var(--mi-ease-fluid), background 0.2s var(--mi-ease), color 0.2s var(--mi-ease), border-color 0.2s var(--mi-ease);
     min-height: 40px;
 }
 .mi-link-btn:hover { background: rgba(255,255,255,0.08); color: var(--mi-text-primary); transform: translateY(-2px); }
@@ -5641,7 +8076,11 @@
     margin-left: auto;
     display: flex;
     align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    flex-wrap: wrap;
 }
+.mi-repo-link,
 .mi-sponsor {
     display: inline-flex;
     align-items: center;
@@ -5652,13 +8091,34 @@
     text-decoration: none;
     background: rgba(255,255,255,0.05);
     border: 1px solid rgba(255,255,255,0.08);
-    transition: all 0.3s var(--mi-ease-out-quart);
+    transition: transform 0.2s var(--mi-ease-fluid), background 0.2s var(--mi-ease), color 0.2s var(--mi-ease), border-color 0.2s var(--mi-ease);
 }
+.mi-repo-link:hover,
 .mi-sponsor:hover {
     color: var(--mi-text-primary);
     background: rgba(255,255,255,0.08);
     transform: translateY(-2px);
     border-color: rgba(255,255,255,0.14);
+}
+.mi-repo-link:focus-visible,
+.mi-sponsor:focus-visible {
+    outline: 2px solid rgba(var(--mi-bg-rgb), 0.82);
+    outline-offset: 2px;
+}
+.mi-repo-icon {
+    width: 15px;
+    height: 15px;
+    flex: 0 0 15px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.45;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+.mi-repo-text {
+    font-size: 12px;
+    font-weight: 600;
+    white-space: nowrap;
 }
 .mi-sponsor-icon {
     font-size: 14px;
@@ -5669,14 +8129,27 @@
     font-weight: 600;
 }
 .mi-clrs {
+    flex: 0 0 auto;
     display: grid;
     grid-template-columns: repeat(5, 1fr);
-    gap: 10px;
-    margin-bottom: 14px;
+    justify-items: center;
+    gap: 8px;
+    margin: 0 0 8px;
+    padding: 10px 12px;
+    border-radius: 16px;
+    background: rgba(255,255,255,0.035);
+    border: 1px solid rgba(255,255,255,0.075);
+}
+.mi-section-label {
+    margin: 0 4px 6px;
+    color: rgba(235,235,245,0.5);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.02em;
 }
 .mi-clr {
-    width: 34px;
-    height: 34px;
+    width: 32px;
+    height: 32px;
     border-radius: 50%;
     border: 2px solid rgba(255,255,255,0.15);
     cursor: pointer;
@@ -5714,9 +8187,8 @@
     position: fixed;
     z-index: 100001;
     background:
-        linear-gradient(180deg, rgba(45, 47, 54, 0.982) 0%, rgba(34, 36, 42, 0.982) 100%),
-        radial-gradient(circle at top left, rgba(255,255,255,0.065), rgba(255,255,255,0) 34%);
-    backdrop-filter: blur(36px) saturate(150%) brightness(1.04);
+        radial-gradient(circle at top left, rgba(255,255,255,0.07), transparent 36%),
+        linear-gradient(180deg, rgba(41, 43, 49, 0.992) 0%, rgba(29, 31, 36, 0.995) 100%);
     border: 1px solid rgba(255,255,255,0.105);
     border-radius: 16px;
     padding: 16px;
@@ -5729,14 +8201,11 @@
     pointer-events: none;
     opacity: 0;
     visibility: hidden;
-    transform: translate3d(18px, 0, 0) scale(0.94);
-    filter: blur(6px) saturate(0.94);
+    transform: translate3d(12px, 0, 0) scale(0.975);
     transition:
-        opacity 0.2s cubic-bezier(0.22, 1, 0.36, 1),
-        transform 0.32s cubic-bezier(0.16, 1, 0.3, 1),
-        filter 0.2s cubic-bezier(0.22, 1, 0.36, 1),
-        visibility 0s linear 0.22s;
-    will-change: transform, opacity, filter;
+        opacity 0.16s cubic-bezier(0.22, 1, 0.36, 1),
+        transform 0.22s cubic-bezier(0.16, 1, 0.3, 1),
+        visibility 0s linear 0.18s;
 }
 .mi-tooltip::before {
     content: '';
@@ -5751,52 +8220,26 @@
     opacity: 0.8;
     pointer-events: none;
 }
-.mi-tooltip > * {
-    opacity: 0;
-    transform: translateY(6px) scale(0.99);
-    transition:
-        opacity 0.16s cubic-bezier(0.22, 1, 0.36, 1),
-        transform 0.24s cubic-bezier(0.16, 1, 0.3, 1);
-}
-.mi-tooltip[data-side="left"] { transform: translate3d(12px, 0, 0) scale(0.94); }
-.mi-tooltip[data-side="right"] { transform: translate3d(-12px, 0, 0) scale(0.94); }
-.mi-tooltip[data-side="top"] { transform: translate3d(0, 10px, 0) scale(0.94); }
-.mi-tooltip[data-side="bottom"] { transform: translate3d(0, -10px, 0) scale(0.94); }
+.mi-tooltip[data-side="left"] { transform: translate3d(10px, 0, 0) scale(0.975); }
+.mi-tooltip[data-side="right"] { transform: translate3d(-10px, 0, 0) scale(0.975); }
+.mi-tooltip[data-side="top"] { transform: translate3d(0, 8px, 0) scale(0.975); }
+.mi-tooltip[data-side="bottom"] { transform: translate3d(0, -8px, 0) scale(0.975); }
 .mi-tooltip.show {
     opacity: 1;
     visibility: visible;
     transform: translate3d(0, 0, 0) scale(1);
-    filter: blur(0) saturate(1);
     transition:
-        opacity 0.22s cubic-bezier(0.22, 1, 0.36, 1),
-        transform 0.34s cubic-bezier(0.16, 1, 0.3, 1),
-        filter 0.2s cubic-bezier(0.22, 1, 0.36, 1),
+        opacity 0.18s cubic-bezier(0.22, 1, 0.36, 1),
+        transform 0.24s cubic-bezier(0.16, 1, 0.3, 1),
         visibility 0s linear 0s;
 }
-.mi-tooltip.show > * {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-}
-.mi-tooltip.show .mi-tooltip-title { transition-delay: 0.02s; }
-.mi-tooltip.show .mi-tooltip-id { transition-delay: 0.04s; }
-.mi-tooltip.show .mi-tooltip-row:nth-of-type(1) { transition-delay: 0.06s; }
-.mi-tooltip.show .mi-tooltip-row:nth-of-type(2) { transition-delay: 0.08s; }
-.mi-tooltip.show .mi-tooltip-row:nth-of-type(3) { transition-delay: 0.1s; }
-.mi-tooltip.show .mi-tooltip-desc { transition-delay: 0.12s; }
-.mi-tooltip.show .mi-tooltip-tools { transition-delay: 0.14s; }
 .mi-tooltip.hiding {
     opacity: 0;
-    filter: blur(5px) saturate(0.94);
 }
-.mi-tooltip.hiding[data-side="left"] { transform: translate3d(12px, 0, 0) scale(0.95); }
-.mi-tooltip.hiding[data-side="right"] { transform: translate3d(-12px, 0, 0) scale(0.95); }
-.mi-tooltip.hiding[data-side="top"] { transform: translate3d(0, 10px, 0) scale(0.95); }
-.mi-tooltip.hiding[data-side="bottom"] { transform: translate3d(0, -10px, 0) scale(0.95); }
-.mi-tooltip.hiding > * {
-    opacity: 0;
-    transform: translateY(6px) scale(0.985);
-    transition-delay: 0s !important;
-}
+.mi-tooltip.hiding[data-side="left"] { transform: translate3d(10px, 0, 0) scale(0.98); }
+.mi-tooltip.hiding[data-side="right"] { transform: translate3d(-10px, 0, 0) scale(0.98); }
+.mi-tooltip.hiding[data-side="top"] { transform: translate3d(0, 8px, 0) scale(0.98); }
+.mi-tooltip.hiding[data-side="bottom"] { transform: translate3d(0, -8px, 0) scale(0.98); }
 .mi-tooltip-title {
     font-size: 16px;
     font-weight: 700;
@@ -5885,11 +8328,6 @@
     border: 1px solid rgba(255,255,255,0.08);
     font-weight: 600;
 }
-@keyframes miBreathing {
-    0%, 100% { box-shadow: var(--mi-shadow-glow), inset 0 1px 0 rgba(255,255,255,0.2); }
-    50% { box-shadow: 0 0 50px -5px var(--mi-bg), 0 12px 40px -8px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.25); }
-}
-@keyframes miRotateGlow { 100% { transform: rotate(360deg); } }
 @keyframes miBadgeBounce {
     0% { transform: scale(0) rotate(-180deg); opacity: 0; }
     50% { transform: scale(1.3) rotate(10deg); }
@@ -5905,50 +8343,215 @@
     0%, 100% { transform: scale(0.76); opacity: 0.2; }
     50% { transform: scale(1.04); opacity: 0.9; }
 }
-@media (max-width: 640px) {
-    #mi-p, #mi-set {
-        width: min(calc(100vw - 24px), 380px);
+@keyframes miModelGlassSweep {
+    0% { transform: translate3d(0,0,0); opacity: 0; }
+    16% { opacity: 0.26; }
+    72% { opacity: 0.16; }
+    100% { transform: translate3d(480%,0,0); opacity: 0; }
+}
+@media (hover: hover) and (pointer: fine) {
+    #mi-b:not(.panel-open):hover::before {
+        opacity: 0.82;
+        transform: scale(1);
+    }
+    #mi-b:not(.panel-open):hover {
+        transform: translateY(-1px) scale(1.035);
+        border-color: rgba(var(--mi-bg-rgb), 0.34);
+        box-shadow: 0 18px 40px rgba(0,0,0,0.36), 0 0 0 5px rgba(var(--mi-bg-rgb), 0.08), inset 0 1px 0 rgba(255,255,255,0.17);
+    }
+    #mi-b:not(.panel-open):hover .icon {
+        transform: scale(1.035);
+        filter: drop-shadow(0 4px 8px rgba(0,0,0,0.28));
+    }
+    .mi-g-item:hover:not(:disabled) {
+        color: rgba(255,255,255,0.88);
+        transform: translateY(-0.5px);
+        background: transparent;
     }
 }
+@media (max-width: 640px) {
+    #mi-p {
+        width: min(calc(100vw - 24px), 368px);
+    }
+}
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+    .mi-panel-surface,
+    #mi-drop { background: rgb(24, 25, 30); }
+    #mi-backdrop {
+        background: rgba(7, 9, 13, 0.58);
+        backdrop-filter: none;
+        -webkit-backdrop-filter: none;
+    }
+}
+@supports ((backdrop-filter: url(#mi-model-injector-liquid-lens)) or (-webkit-backdrop-filter: url(#mi-model-injector-liquid-lens))) {
+    .mi-panel-surface {
+        backdrop-filter: blur(18px) url(#mi-model-injector-liquid-lens) saturate(162%) brightness(1.07);
+        -webkit-backdrop-filter: blur(18px) url(#mi-model-injector-liquid-lens) saturate(162%) brightness(1.07);
+    }
+    #mi-drop {
+        backdrop-filter: blur(20px) url(#mi-model-injector-liquid-lens) saturate(160%) brightness(1.065);
+        -webkit-backdrop-filter: blur(20px) url(#mi-model-injector-liquid-lens) saturate(160%) brightness(1.065);
+    }
+    .mi-effort-lens-material {
+        backdrop-filter: url(#mi-model-injector-liquid-lens) blur(10px) saturate(148%) brightness(1.055);
+        -webkit-backdrop-filter: url(#mi-model-injector-liquid-lens) blur(10px) saturate(148%) brightness(1.055);
+    }
+    #mi-p.is-motion-primed > .mi-panel-surface,
+    #mi-p.is-motion-active > .mi-panel-surface {
+        backdrop-filter: blur(12px) saturate(152%) brightness(1.06);
+        -webkit-backdrop-filter: blur(12px) saturate(152%) brightness(1.06);
+    }
+    #mi-p.is-motion-primed .mi-effort-lens-material,
+    #mi-p.is-motion-active .mi-effort-lens-material {
+        background:
+            radial-gradient(118% 92% at 18% -18%, rgba(255,255,255,0.30) 0%, rgba(255,255,255,0.10) 30%, transparent 49%),
+            linear-gradient(180deg, rgba(255,255,255,0.10), rgba(255,255,255,0.035) 52%, rgba(0,0,0,0.05)),
+            rgba(48,52,61,0.70);
+        backdrop-filter: none;
+        -webkit-backdrop-filter: none;
+    }
+}
+@media (prefers-reduced-transparency: reduce) {
+    .mi-panel-surface,
+    #mi-drop {
+        background: rgb(24, 25, 30);
+        backdrop-filter: none;
+        -webkit-backdrop-filter: none;
+    }
+    #mi-backdrop {
+        background: rgba(7, 9, 13, 0.54);
+        backdrop-filter: none;
+        -webkit-backdrop-filter: none;
+    }
+    .mi-view-stack::before { display: none; }
+    .mi-source-state {
+        background: rgba(23, 27, 29, 0.96);
+        border-color: rgba(160, 255, 202, 0.44);
+    }
+    .mi-effort-lens-material {
+        background: linear-gradient(180deg, rgba(82,86,96,0.98), rgba(48,51,59,0.98));
+        backdrop-filter: none;
+        -webkit-backdrop-filter: none;
+    }
+}
+@media (prefers-reduced-motion: reduce) {
+    #mi *,
+    #mi *::before,
+    #mi *::after {
+        scroll-behavior: auto !important;
+        animation: none !important;
+        transition: none !important;
+    }
+}
+@media (forced-colors: active) {
+    .mi-panel-surface,
+    #mi-b,
+    #mi-drop,
+    .mi-tooltip {
+        color: CanvasText;
+        background: Canvas;
+        border: 1px solid ButtonBorder;
+        box-shadow: none;
+        forced-color-adjust: auto;
+    }
+    #mi-backdrop { background: Canvas; opacity: 0.45; }
+    #mi-ring-fg,
+    #mi-b .mi-brand-orbit,
+    #mi-b .mi-brand-lens { stroke: Highlight; }
+    #mi-b .mi-brand-pupil,
+    #mi-b .mi-brand-node { fill: Highlight; }
+    .mi-effort-lens { display: none; }
+    .mi-g-item.active { border: 2px solid Highlight; color: Highlight; }
+    .mi-sw {
+        background: Canvas;
+        border: 1px solid ButtonBorder;
+        box-shadow: none;
+    }
+    .mi-sw::before { display: none; }
+    .mi-sw::after {
+        background: ButtonText;
+        border: 1px solid ButtonBorder;
+        box-shadow: none;
+    }
+    .mi-sw.on { background: Highlight; }
+    .mi-sw.on::after { background: HighlightText; }
+    .mi-source-state {
+        color: ButtonText;
+        background: Canvas;
+        border-color: ButtonBorder;
+        box-shadow: none;
+    }
+    .mi-custom-remove {
+        color: ButtonText;
+        background: Canvas;
+        border-color: ButtonBorder;
+        box-shadow: none;
+    }
+    .mi-source-dot { background: Highlight; }
+}
 </style>
+<svg class="mi-glass-defs" width="0" height="0" aria-hidden="true" focusable="false">
+    <defs>
+        <filter id="mi-model-injector-liquid-lens" x="-18%" y="-28%" width="136%" height="156%" color-interpolation-filters="sRGB">
+            <feTurbulence type="fractalNoise" baseFrequency="0.012 0.085" numOctaves="1" seed="19" result="mi-lens-noise"></feTurbulence>
+            <feGaussianBlur in="mi-lens-noise" stdDeviation="0.42" result="mi-lens-soft-noise"></feGaussianBlur>
+            <feDisplacementMap in="SourceGraphic" in2="mi-lens-soft-noise" scale="2.25" xChannelSelector="R" yChannelSelector="G"></feDisplacementMap>
+        </filter>
+    </defs>
+</svg>
 <div id="mi-backdrop"></div>
-<div id="mi-b" title="Drag to move | Right click to pause">
+<button id="mi-b" type="button" title="Open Model Injector" aria-label="Open Model Injector" aria-expanded="false" aria-controls="mi-p">
     <div id="mi-ring-wrap">
         <svg id="mi-ring-svg" viewBox="0 0 68 68" aria-hidden="true">
             <circle id="mi-ring-bg" cx="34" cy="34" r="31"></circle>
             <circle id="mi-ring-fg" cx="34" cy="34" r="31" stroke-dasharray="${BUTTON_RING}" stroke-dashoffset="${BUTTON_RING}"></circle>
         </svg>
     </div>
-    <svg class="icon" viewBox="0 0 320 320" aria-hidden="true"><path d="${CHATGPT_ICON_PATH}"></path></svg>
+    <svg class="icon" viewBox="0 0 64 64" aria-hidden="true">
+        <g class="mi-brand-orbit-group">
+            <path class="mi-brand-orbit" d="M48.1 15.9A23.2 23.2 0 1 0 51.7 43.7"></path>
+            <circle class="mi-brand-node" cx="48.1" cy="15.9" r="2.35"></circle>
+            <circle class="mi-brand-node" cx="51.7" cy="43.7" r="1.75" opacity="0.66"></circle>
+        </g>
+        <g class="mi-brand-core">
+            <path class="mi-brand-lens" d="M32 21.7C39.2 26.5 39.2 37.5 32 42.3C24.8 37.5 24.8 26.5 32 21.7Z"></path>
+        </g>
+        <g class="mi-brand-center">
+            <circle class="mi-brand-pupil" cx="32" cy="32" r="3.1"></circle>
+            <circle class="mi-brand-glint" cx="30.9" cy="30.9" r="0.85"></circle>
+        </g>
+    </svg>
     <div id="mi-n">0</div>
     <div id="mi-model-label">Default model</div>
-</div>
-<div id="mi-p">
+</button>
+<div id="mi-p" role="dialog" aria-modal="true" aria-labelledby="mi-panel-title" aria-hidden="true" tabindex="-1" data-view="main" inert>
+    <div class="mi-panel-surface">
+    <div class="mi-view-stack">
+    <section id="mi-main-view" class="mi-panel-view" aria-hidden="false">
     <div class="mi-head">
-        <h3>Model Injector</h3>
+        <h3 id="mi-panel-title">Model Injector</h3>
         <span class="mi-status" id="mi-st">Ready</span>
     </div>
     <div class="mi-body">
         <div class="mi-row">
-            <div class="mi-lbl">Enable override <em>Override request</em></div>
-            <div class="mi-sw" id="mi-sw-main"></div>
+            <div class="mi-lbl"><span id="mi-enable-title">Enable override</span><em><span id="mi-enable-subtitle">Override request</span><strong class="mi-toggle-state" id="mi-enable-state">Off</strong></em></div>
+            <button class="mi-sw" id="mi-sw-main" type="button" role="switch" aria-checked="false"><span class="mi-sr-only">Enable override</span></button>
         </div>
         <div id="mi-sel-wrap">
-            <div id="mi-sel-btn" title="Choose model"><span id="mi-sel-txt">Choose model...</span></div>
-            <div id="mi-drop"></div>
+            <button id="mi-sel-btn" type="button" title="Choose model" aria-haspopup="listbox" aria-controls="mi-menu-options" aria-expanded="false"><span id="mi-sel-txt">Choose model...</span><span class="mi-select-chevron" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path d="M6.5 9.25 12 14.5l5.5-5.25"></path></svg></span></button>
         </div>
         <div class="mi-infobar">
             <span id="mi-info-txt">No models loaded</span>
-            <span id="mi-ref-btn" title="Refresh list"><span class="mi-ref-icon" aria-hidden="true">&#8635;</span><span id="mi-ref-label">Refresh list</span></span>
+            <button id="mi-ref-btn" type="button" title="Refresh list"><span class="mi-ref-icon" aria-hidden="true">&#8635;</span><span id="mi-ref-label">Refresh list</span></button>
         </div>
         <div class="mi-chips" id="mi-chips"></div>
         <div class="mi-inp-grp">
             <input class="mi-inp" id="mi-cu" placeholder="Add model slug">
-            <button class="mi-icon-btn" id="mi-add" title="Add model slug">+</button>
+            <button class="mi-icon-btn" id="mi-add" type="button" title="Add model slug">+</button>
         </div>
         <div class="mi-row">
-            <div class="mi-lbl">Thinking effort <em>Applies to reasoning models</em></div>
-            <div class="mi-sw" id="mi-sw-effort"></div>
+            <div class="mi-lbl"><span id="mi-effort-title">Thinking effort</span><em><span id="mi-effort-subtitle">Applies to reasoning models</span><strong class="mi-toggle-state" id="mi-effort-state">Off</strong></em></div>
+            <button class="mi-sw" id="mi-sw-effort" type="button" role="switch" aria-checked="false"><span class="mi-sr-only">Thinking effort</span></button>
         </div>
         <div class="mi-grid" id="mi-grid-eff"></div>
         <div class="mi-box">
@@ -5975,12 +8578,12 @@
             </div>
         </div>
         <div class="mi-diagnostics" id="mi-diag">
-            <button class="mi-diag-toggle" id="mi-diag-toggle" type="button" aria-expanded="false">
+            <button class="mi-diag-toggle" id="mi-diag-toggle" type="button" aria-expanded="false" aria-controls="mi-diag-panel">
                 <span class="mi-diag-title" id="mi-diag-title">Injection diagnostics</span>
                 <span class="mi-diag-summary" id="mi-diag-summary">Default model · Not checked · None</span>
                 <span class="mi-diag-chevron" aria-hidden="true"></span>
             </button>
-            <div class="mi-diag-panel" id="mi-diag-panel">
+            <div class="mi-diag-panel" id="mi-diag-panel" aria-hidden="true" inert>
                 <div class="mi-diag-grid">
                     <span id="mi-diag-selected-k">Selected model</span>
                     <strong id="mi-diag-selected">Default model</strong>
@@ -6006,15 +8609,17 @@
         </div>
     </div>
     <div class="mi-foot">
-        <button class="mi-link-btn" id="mi-btn-set">Settings</button>
+        <button class="mi-link-btn" id="mi-btn-set" type="button">Settings</button>
         <div id="mi-sponsor-slot"></div>
     </div>
-</div>
-<div id="mi-set">
+</section>
+<section id="mi-set" class="mi-panel-view" aria-labelledby="mi-settings-title" aria-hidden="true" inert>
     <div class="mi-set-head">
-        <h4>Settings</h4>
-        <span class="mi-set-close" id="mi-set-close">x</span>
+        <button class="mi-set-close" id="mi-set-close" type="button" aria-label="Back to main panel">&#8592;</button>
+        <h4 id="mi-settings-title">Settings</h4>
+        <span class="mi-set-spacer" aria-hidden="true"></span>
     </div>
+    <div class="mi-section-label" id="mi-theme-label">Theme color</div>
     <div class="mi-clrs" id="mi-clrs"></div>
     <div class="mi-color-row">
         <label>Custom color</label>
@@ -6024,20 +8629,30 @@
     <div class="mi-row" id="mi-lang-row">
         <label id="mi-lang-label">Language</label>
         <div id="mi-lang-picker" class="mi-lang-picker">
-            <button id="mi-lang-trigger" class="mi-lang-trigger" type="button" aria-haspopup="listbox" aria-expanded="false">
+            <button id="mi-lang-trigger" class="mi-lang-trigger" type="button" aria-haspopup="listbox" aria-controls="mi-lang-menu" aria-expanded="false">
                 <span id="mi-lang-current"></span>
             </button>
-            <div id="mi-lang-menu" class="mi-lang-menu" role="listbox"></div>
         </div>
     </div>
     <div class="mi-row mi-debug-row">
         <label id="mi-debug-label">Debug mode (open console for logs)</label>
-        <div class="mi-sw mi-sw-compact" id="mi-sw-debug"></div>
+        <button class="mi-sw mi-sw-compact" id="mi-sw-debug" type="button" role="switch" aria-checked="false"><span class="mi-sr-only">Debug mode</span></button>
     </div>
+    <div class="mi-settings-note">
+        <strong id="mi-privacy-title">Privacy by default</strong>
+        <span id="mi-privacy-body">Packet diagnostics stay in memory and are erased when debug mode is turned off.</span>
+        <button class="mi-link-btn" id="mi-clear-diagnostics" type="button">Clear diagnostics</button>
+    </div>
+</section>
+    </div>
+    </div>
+    <div id="mi-lang-menu" class="mi-lang-menu" role="listbox" aria-hidden="true" inert></div>
+    <div id="mi-drop" aria-hidden="true" tabindex="-1"></div>
 </div>
         `;
 
         document.body.appendChild(host);
+        registerPanelMotionProperties();
         refs = { mi: host, ...Object.fromEntries([...host.querySelectorAll('[id]')].map(element => [element.id, element])) };
         applyUiText();
 
@@ -6050,14 +8665,21 @@
         if (q('mi-color-picker')) q('mi-color-picker').value = S.bgColor;
         if (q('mi-color-hex')) q('mi-color-hex').value = S.bgColor;
 
+        renderColors();
+        renderSponsorModule();
         updateUIState();
         bindEvents();
         scheduleTokenUpdate(true);
+        refreshWhenTokenizerReady();
         setupAutoTokenRefresh();
         scheduleWorkspaceAgentScan(300);
 
         if (isSupportedHost() && !S.api.length) window.setTimeout(fetchModels, LOAD_DELAY);
-        requestAnimationFrame(clampPosition);
+        requestAnimationFrame(() => {
+            clampPosition();
+            schedulePanelMotionPreparation(q('mi-p'));
+            schedulePanelFirstPaintPreparation(q('mi-p'));
+        });
     }
 
     function waitForBody(callback) {

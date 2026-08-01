@@ -1,0 +1,14 @@
+<svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg" color="#FFFFFF" role="img" aria-labelledby="title desc">
+  <title id="title">Model Injector Orbital Lens</title>
+  <desc id="desc">An original open orbit surrounding a vertical optical lens and light point.</desc>
+  <g id="orbit" class="mi-brand-orbit-group" transform-origin="32 32">
+    <path class="mi-brand-orbit" d="M48.1 15.9A23.2 23.2 0 1 0 51.7 43.7" stroke="currentColor" stroke-width="4.25" stroke-linecap="round"/>
+    <circle class="mi-brand-node" cx="48.1" cy="15.9" r="2.35" fill="currentColor"/>
+    <circle class="mi-brand-node" cx="51.7" cy="43.7" r="1.75" fill="currentColor" opacity="0.66"/>
+  </g>
+  <g id="core" class="mi-brand-core" transform-origin="32 32">
+    <path class="mi-brand-lens" d="M32 21.7C39.2 26.5 39.2 37.5 32 42.3C24.8 37.5 24.8 26.5 32 21.7Z" fill="none" stroke="currentColor" stroke-width="3.25" stroke-linejoin="round"/>
+    <circle class="mi-brand-pupil" cx="32" cy="32" r="3.1" fill="currentColor"/>
+    <circle cx="30.9" cy="30.9" r="0.85" fill="white" opacity="0.72"/>
+  </g>
+</svg>
