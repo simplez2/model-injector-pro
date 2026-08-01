@@ -1,9 +1,9 @@
 window.MI_CONFIG = {
     sponsor: {
-        enabled: false,
+        enabled: true,
         label: '',
-        href: '',
-        title: '',
+        href: 'https://ifdian.net/a/simplez2',
+        title: 'Support Model Injector Pro',
         useI18nLabel: true,
         newTab: true
     }
