@@ -4,7 +4,7 @@
     'use strict';
 
     const PREFIX = 'cgpt_v12_';
-    const SCRIPT_BUILD = '2026-07-31-ios-liquid-motion-v14';
+    const SCRIPT_BUILD = '2026-08-03-fast-model-menu-v17';
     const PROJECT_REPOSITORY_URL = 'https://github.com/simplez2/model-injector-pro';
     const PACKET_LOG_LIMIT = 48;
     const MODELS_ENDPOINT = '/backend-api/models';
@@ -28,6 +28,9 @@
     const PANEL_FIRST_PAINT_IDLE_TIMEOUT = 240;
     const PANEL_MOTION_SAMPLE_COUNT = 25;
     const PANEL_MOTION_CONTENT_DELAY = 0.22;
+    const PANEL_VIEW_MOTION_DURATION = 420;
+    const DROPDOWN_MOTION_DURATION = 230;
+    const DROPDOWN_MOTION_SAMPLE_COUNT = 11;
     const BUTTON_RING = 194.78;
     const COLLATOR = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
     const COLORS = ['#007aff', '#2563eb', '#0ea5e9', '#14b8a6', '#10b981', '#f59e0b', '#f97316', '#ef4444', '#ec4899', '#8b5cf6'];
@@ -105,6 +108,7 @@
         return false;
     }
     const PRESET_ORDER = new Map(PRESETS.map((item, index) => [item[0], index]));
+    const SPECIAL_MODEL_IDS = new Set(PRESETS.filter(([, , , group]) => group === 'special').map(([id]) => id));
     const MENU_LABELS = {
         auto: 'Auto',
         // 5.6 official
@@ -261,6 +265,15 @@
     let liveCatalogSyncAttempted = false;
     let panelToggleGeneration = 0;
     let iconMotionCycle = 0;
+    let dropdownMotionAnimation = null;
+    let dropdownMotionOpening = null;
+    let dropdownMotionGeneration = 0;
+    let dropdownOpenFrame = 0;
+    let dropdownRenderSignature = '';
+    let dropdownWarmJob = 0;
+    let modelMenuOfflineExpanded = false;
+    let panelViewMotionGeneration = 0;
+    let panelViewMotionAnimations = [];
     let hookInstalled = false;
     let wrappedFetch = null;
     let wrappedSendBeacon = null;
@@ -374,6 +387,10 @@
             tooltip_reasoning: '推理类型',
             tooltip_version: '版本',
             online: '在线',
+            online_models: '在线模型',
+            offline_models: '未在线模型',
+            show_offline_models: '展开未在线模型',
+            hide_offline_models: '收起未在线模型',
             paused: '已暂停',
             status_ready: '就绪',
             models_unit: '个模型',
@@ -474,6 +491,10 @@
             tooltip_reasoning: 'Reasoning mode',
             tooltip_version: 'Version',
             online: 'Online',
+            online_models: 'Online models',
+            offline_models: 'Offline models',
+            show_offline_models: 'Show offline models',
+            hide_offline_models: 'Hide offline models',
             paused: 'Paused',
             status_ready: 'Ready',
             models_unit: 'models',
@@ -574,6 +595,10 @@
             tooltip_reasoning: '推論タイプ',
             tooltip_version: 'バージョン',
             online: 'オンライン',
+            online_models: 'オンラインモデル',
+            offline_models: 'オフラインモデル',
+            show_offline_models: 'オフラインモデルを表示',
+            hide_offline_models: 'オフラインモデルを隠す',
             paused: '一時停止',
             status_ready: '準備完了',
             models_unit: 'モデル',
@@ -674,6 +699,10 @@
             tooltip_reasoning: 'Режим рассуждения',
             tooltip_version: 'Версия',
             online: 'Онлайн',
+            online_models: 'Онлайн-модели',
+            offline_models: 'Неактивные модели',
+            show_offline_models: 'Показать неактивные модели',
+            hide_offline_models: 'Скрыть неактивные модели',
             paused: 'Пауза',
             status_ready: 'Готово',
             models_unit: 'моделей',
@@ -871,6 +900,10 @@
     function sortModelEntries(a, b) { return COLLATOR.compare(a?.name || a?.id || '', b?.name || b?.id || ''); }
     function getApiEntry(id) { return S.api.find(item => item.id === id) || null; }
     function isLiveCatalogModel(id) { return liveApiModelIds.has(id); }
+    function isPersistentSpecialModel(id) { return SPECIAL_MODEL_IDS.has(String(id || '')); }
+    function compareMenuModelItems(a, b) {
+        return ((PRESET_ORDER.get(a?.id) ?? 999) - (PRESET_ORDER.get(b?.id) ?? 999)) || sortModelEntries(a, b);
+    }
     function isWorkspaceAgentSelection(id) { return typeof id === 'string' && id.startsWith(WORKSPACE_AGENT_PREFIX); }
     function makeWorkspaceAgentSelection(id) { return id ? `${WORKSPACE_AGENT_PREFIX}${id}` : ''; }
     function getWorkspaceAgentId(selection = S.model) { return isWorkspaceAgentSelection(selection) ? selection.slice(WORKSPACE_AGENT_PREFIX.length) : ''; }
@@ -1143,7 +1176,8 @@
     function commitWorkspaceAgentCatalog() {
         saveJson('agents', S.agents);
         saveValue('laf', S.lastAgentFetch);
-        renderDropdown();
+        renderDropdown({ animateUpdate: true });
+        scheduleDropdownWarmRender();
         renderRecent();
         updateInfo();
         updateDiagnostics();
@@ -1872,6 +1906,7 @@
 
         log(options.fromHook ? 'API models updated from hook' : 'API models loaded', S.api.length);
         renderDropdown();
+        scheduleDropdownWarmRender();
         renderRecent();
         updateInfo();
         updateModelLabel();
@@ -3158,15 +3193,130 @@
         backdrop.classList.toggle('show', Boolean(open));
     }
 
+    function getElasticMotionProgress(value) {
+        const t = clamp(Number(value) || 0, 0, 1);
+        const damping = 8.2;
+        const frequency = 11.4;
+        const response = x => 1 - Math.exp(-damping * x) * (Math.cos(frequency * x) + (damping / frequency) * Math.sin(frequency * x));
+        const end = response(1) || 1;
+        return response(t) / end;
+    }
+
+    function buildDropdownClothFrames(opening, placement) {
+        const frames = [];
+        const count = DROPDOWN_MOTION_SAMPLE_COUNT;
+        const direction = placement === 'above' ? 1 : -1;
+        for (let index = 0; index < count; index += 1) {
+            const offset = index / (count - 1);
+            const motionOffset = offset;
+            const easeOut = 1 - Math.pow(1 - motionOffset, 3);
+            const progress = easeOut + (Math.sin(Math.PI * motionOffset) * 0.032);
+            const reveal = clamp(progress, 0, 1);
+            const overshoot = Math.max(0, progress - 1);
+            const translateY = direction * (1 - reveal) * 7;
+            const scaleY = 0.92 + (reveal * 0.08) + (overshoot * 0.12);
+            const scaleX = 0.985 + (reveal * 0.015) - (overshoot * 0.022);
+            frames.push({
+                offset,
+                opacity: String(clamp(reveal * 1.35, 0, 1)),
+                transform: `translate3d(0, ${translateY.toFixed(3)}px, 0) scaleX(${scaleX.toFixed(5)}) scaleY(${scaleY.toFixed(5)})`
+            });
+        }
+        if (opening) return frames;
+        return frames.slice().reverse().map((frame, index) => ({ ...frame, offset: index / (count - 1) }));
+    }
+
+    function finishDropdownMotion(opening, generation) {
+        if (generation !== dropdownMotionGeneration) return;
+        const drop = q('mi-drop');
+        dropdownMotionAnimation = null;
+        dropdownMotionOpening = null;
+        if (!drop) return;
+        drop.classList.remove('is-cloth-motion');
+        if (opening) {
+            drop.classList.add('show');
+            drop.classList.remove('is-closing');
+        } else {
+            drop.classList.remove('show', 'is-closing');
+            drop.setAttribute('aria-hidden', 'true');
+            if (modelMenuOfflineExpanded) {
+                modelMenuOfflineExpanded = false;
+                dropdownRenderSignature = '';
+                requestAnimationFrame(() => renderDropdown({ force: true }));
+            }
+        }
+        drop.getAnimations?.().forEach(animation => animation.cancel());
+    }
+
+    function playDropdownMotion(opening) {
+        const drop = q('mi-drop');
+        if (!drop) return;
+        if (dropdownMotionAnimation && dropdownMotionOpening === opening) return;
+        const generation = ++dropdownMotionGeneration;
+        if (prefersReducedMotion() || typeof drop.animate !== 'function') {
+            finishDropdownMotion(opening, generation);
+            return;
+        }
+        drop.classList.add('is-cloth-motion');
+
+        if (dropdownMotionAnimation && dropdownMotionOpening !== opening) {
+            dropdownMotionOpening = opening;
+            drop.classList.toggle('is-closing', !opening);
+            dropdownMotionAnimation.reverse();
+            dropdownMotionAnimation.onfinish = () => finishDropdownMotion(opening, generation);
+            return;
+        }
+        const placement = drop.dataset.placement || 'below';
+        drop.classList.toggle('is-closing', !opening);
+        dropdownMotionOpening = opening;
+        dropdownMotionAnimation = drop.animate(buildDropdownClothFrames(opening, placement), {
+            duration: opening ? DROPDOWN_MOTION_DURATION : Math.round(DROPDOWN_MOTION_DURATION * 0.8),
+            easing: 'linear',
+            fill: 'both'
+        });
+        dropdownMotionAnimation.onfinish = () => finishDropdownMotion(opening, generation);
+    }
+
+    function scheduleDropdownWarmRender() {
+        if (dropdownWarmJob || !host) return;
+        const run = () => {
+            dropdownWarmJob = 0;
+            const drop = q('mi-drop');
+            if (drop && !drop.classList.contains('show')) renderDropdown({ force: true });
+        };
+        if (typeof window.requestIdleCallback === 'function') {
+            dropdownWarmJob = window.requestIdleCallback(run, { timeout: 360 });
+        } else {
+            dropdownWarmJob = window.setTimeout(run, 80);
+        }
+    }
+
     function closeDropdown(animate = true) {
         const wrap = q('mi-sel-wrap');
         const drop = q('mi-drop');
         q('mi-sel-btn')?.setAttribute('aria-expanded', 'false');
+        if (dropdownOpenFrame) {
+            cancelAnimationFrame(dropdownOpenFrame);
+            dropdownOpenFrame = 0;
+        }
         if (!wrap || !drop || !drop.classList.contains('show')) return;
         wrap.classList.remove('open');
-        drop.classList.remove('show');
         drop.setAttribute('aria-hidden', 'true');
-        if (!animate) drop.getAnimations?.().forEach(animation => animation.finish());
+        if (!animate || prefersReducedMotion()) {
+            dropdownMotionGeneration += 1;
+            dropdownMotionAnimation?.cancel();
+            dropdownMotionAnimation = null;
+            dropdownMotionOpening = null;
+            drop.classList.remove('show', 'is-closing', 'is-cloth-motion');
+            drop.getAnimations?.().forEach(animation => animation.cancel());
+            if (modelMenuOfflineExpanded) {
+                modelMenuOfflineExpanded = false;
+                dropdownRenderSignature = '';
+                requestAnimationFrame(() => renderDropdown({ force: true }));
+            }
+            return;
+        }
+        playDropdownMotion(false);
     }
 
     function focusMenuSearch() {
@@ -3222,18 +3372,29 @@
     }
 
     function openDropdown(focusSearch = false) {
-        scanWorkspaceAgentsFromPage();
         renderDropdown({ force: true });
-        q('mi-sel-wrap')?.classList.add('open');
+        const wrap = q('mi-sel-wrap');
+        const drop = q('mi-drop');
+        if (!wrap || !drop) return;
+        wrap.classList.add('open');
         positionDropdown();
-        q('mi-drop')?.classList.add('show');
-        q('mi-drop')?.setAttribute('aria-hidden', 'false');
+        drop.classList.add('show');
+        drop.classList.remove('is-closing');
+        drop.setAttribute('aria-hidden', 'false');
         q('mi-sel-btn')?.setAttribute('aria-expanded', 'true');
+        playDropdownMotion(true);
+        if (focusSearch) {
+            if (dropdownOpenFrame) cancelAnimationFrame(dropdownOpenFrame);
+            dropdownOpenFrame = requestAnimationFrame(() => {
+                dropdownOpenFrame = 0;
+                focusMenuSearch();
+            });
+        }
+        scheduleWorkspaceAgentScan(DROPDOWN_MOTION_DURATION + 120);
         if (isSupportedHost() && S.api.length && !liveApiModelIds.size && !liveCatalogSyncAttempted) {
             liveCatalogSyncAttempted = true;
             fetchModels();
         }
-        if (focusSearch) requestAnimationFrame(focusMenuSearch);
     }
 
     function positionLanguageMenu() {
@@ -3402,30 +3563,152 @@
         return { originX, originY, shiftX, shiftY, width: panelWidth, height: panelHeight };
     }
 
+    function buildPanelViewFrames(entering, direction) {
+        const frames = [];
+        const count = 19;
+        for (let index = 0; index < count; index += 1) {
+            const offset = index / (count - 1);
+            if (entering) {
+                const progress = getElasticMotionProgress(clamp((offset - 0.14) / 0.86, 0, 1));
+                const reveal = clamp(progress, 0, 1);
+                const overshoot = Math.max(0, progress - 1);
+                const sideInset = (1 - reveal) * 18;
+                const clipPath = direction > 0
+                    ? `inset(0% 0% 0% ${sideInset}% round 20px)`
+                    : `inset(0% ${sideInset}% 0% 0% round 20px)`;
+                frames.push({
+                    offset,
+                    opacity: String(clamp((reveal - 0.025) * 1.18, 0, 1)),
+                    transform: `translate3d(${(direction * ((1 - reveal) * 34 - overshoot * 3.5)).toFixed(3)}px, 0, 0) scaleX(${(0.955 + reveal * 0.045 + overshoot * 0.045).toFixed(5)}) scaleY(${(0.985 + reveal * 0.015).toFixed(5)})`,
+                    clipPath
+                });
+            } else {
+                const progress = offset * offset * (3 - (2 * offset));
+                const opacityProgress = clamp(progress * 2.2, 0, 1);
+                const sideInset = progress * 14;
+                const clipPath = direction > 0
+                    ? `inset(0% ${sideInset}% 0% 0% round 20px)`
+                    : `inset(0% 0% 0% ${sideInset}% round 20px)`;
+                frames.push({
+                    offset,
+                    opacity: String(1 - opacityProgress),
+                    transform: `translate3d(${(-direction * progress * 24).toFixed(3)}px, 0, 0) scaleX(${(1 - progress * 0.022).toFixed(5)}) scaleY(${(1 - progress * 0.008).toFixed(5)})`,
+                    clipPath
+                });
+            }
+        }
+        return frames;
+    }
+
+    function playPanelViewTransition(fromView, nextView, focusTarget, fromHeight, targetHeight) {
+        const panel = q('mi-p');
+        const fromElement = fromView === 'settings' ? q('mi-set') : q('mi-main-view');
+        const nextElement = nextView === 'settings' ? q('mi-set') : q('mi-main-view');
+        const stack = panel?.querySelector('.mi-view-stack');
+        const surface = panel?.querySelector('.mi-panel-surface');
+        if (!panel || !fromElement || !nextElement || fromElement === nextElement) {
+            if (focusTarget) schedulePanelFocus(focusTarget);
+            return;
+        }
+
+        panelViewMotionGeneration += 1;
+        const generation = panelViewMotionGeneration;
+        panelViewMotionAnimations.forEach(animation => animation.cancel());
+        panelViewMotionAnimations = [];
+        fromElement.classList.add('mi-view-transitioning');
+        nextElement.classList.add('mi-view-transitioning');
+
+        if (prefersReducedMotion() || typeof nextElement.animate !== 'function') {
+            fromElement.classList.remove('mi-view-transitioning');
+            nextElement.classList.remove('mi-view-transitioning');
+            if (focusTarget) schedulePanelFocus(focusTarget);
+            return;
+        }
+
+        const direction = nextView === 'settings' ? 1 : -1;
+        const outgoing = fromElement.animate(buildPanelViewFrames(false, direction), {
+            duration: Math.round(PANEL_VIEW_MOTION_DURATION * 0.5),
+            easing: 'linear',
+            fill: 'both'
+        });
+        const incoming = nextElement.animate(buildPanelViewFrames(true, direction), {
+            duration: PANEL_VIEW_MOTION_DURATION,
+            easing: 'linear',
+            fill: 'both'
+        });
+        const normalizedFromHeight = Math.max(0, Number(fromHeight) || 0);
+        const normalizedTargetHeight = Math.max(0, Number(targetHeight) || 0);
+        const heightAnimation = stack && Math.abs(normalizedTargetHeight - normalizedFromHeight) > 1
+            ? stack.animate([
+                {
+                    height: `${Math.round(normalizedFromHeight)}px`,
+                    maxHeight: `${Math.round(normalizedFromHeight)}px`
+                },
+                {
+                    height: `${Math.round(normalizedTargetHeight)}px`,
+                    maxHeight: `${Math.round(normalizedTargetHeight)}px`
+                }
+            ], {
+                duration: PANEL_VIEW_MOTION_DURATION,
+                easing: 'cubic-bezier(0.2, 0.78, 0.2, 1)',
+                fill: 'both'
+            })
+            : null;
+        const anchorOffsetY = panel.dataset.placement === 'above' && normalizedTargetHeight < normalizedFromHeight
+            ? normalizedTargetHeight - normalizedFromHeight
+            : 0;
+        const surfaceAnimation = surface && Math.abs(anchorOffsetY) > 1
+            ? surface.animate([
+                { transform: `translate3d(0, ${Math.round(anchorOffsetY)}px, 0)` },
+                { transform: 'translate3d(0, 0, 0)' }
+            ], {
+                duration: PANEL_VIEW_MOTION_DURATION,
+                easing: 'cubic-bezier(0.2, 0.78, 0.2, 1)',
+                fill: 'both'
+            })
+            : null;
+        panelViewMotionAnimations = [outgoing, incoming, heightAnimation, surfaceAnimation].filter(Boolean);
+        incoming.onfinish = () => {
+            if (generation !== panelViewMotionGeneration) return;
+            panelViewMotionAnimations.forEach(animation => animation.cancel());
+            panelViewMotionAnimations = [];
+            fromElement.classList.remove('mi-view-transitioning');
+            nextElement.classList.remove('mi-view-transitioning');
+            if (focusTarget) schedulePanelFocus(focusTarget);
+        };
+    }
+
     function setPanelView(view = 'main', focus = true) {
         const panel = q('mi-p');
         if (!panel) return;
         const nextView = view === 'settings' ? 'settings' : 'main';
+        const previousView = panel.dataset.view === 'settings' ? 'settings' : 'main';
         const mainView = q('mi-main-view');
         const settingsView = q('mi-set');
+        const viewStack = panel.querySelector('.mi-view-stack');
+        const fromHeight = viewStack?.getBoundingClientRect().height || (previousView === 'settings' ? PANEL_SETTINGS_HEIGHT : PANEL_MAIN_HEIGHT);
+        const focusTarget = nextView === 'settings' ? q('mi-set-close') : q('mi-sel-btn');
+        if (previousView === nextView) {
+            if (focus && panel.classList.contains('show')) schedulePanelFocus(focusTarget);
+            return;
+        }
         panel.dataset.view = nextView;
         panel.setAttribute('aria-labelledby', nextView === 'settings' ? 'mi-settings-title' : 'mi-panel-title');
         mainView?.setAttribute('aria-hidden', nextView === 'main' ? 'false' : 'true');
         settingsView?.setAttribute('aria-hidden', nextView === 'settings' ? 'false' : 'true');
         mainView?.toggleAttribute('inert', nextView !== 'main');
         settingsView?.toggleAttribute('inert', nextView !== 'settings');
-        if (panel.classList.contains('show') && !panel.classList.contains('is-motion-active')) {
+        const shouldPrepareLayout = panel.classList.contains('show') && !panel.classList.contains('is-motion-active');
+        let targetHeight = nextView === 'settings' ? PANEL_SETTINGS_HEIGHT : PANEL_MAIN_HEIGHT;
+        if (shouldPrepareLayout) {
             invalidatePanelMotionLayout(panel);
-            requestAnimationFrame(() => {
-                if (panel.classList.contains('show') && !panel.classList.contains('is-closing')) {
-                    const geometry = preparePanelMotionLayout(panel);
-                    preparePanelMotionAnimation(panel, geometry, PANEL_MOTION_DURATION);
-                }
-            });
+            const geometry = preparePanelMotionLayout(panel);
+            if (Number.isFinite(geometry?.height)) targetHeight = geometry.height;
+            preparePanelMotionAnimation(panel, geometry, PANEL_MOTION_DURATION);
         }
-        if (focus && panel.classList.contains('show')) {
-            schedulePanelFocus(nextView === 'settings' ? q('mi-set-close') : q('mi-sel-btn'));
-        }
+        const shouldAnimate = panel.classList.contains('show') && !panel.classList.contains('is-motion-active') && !panel.classList.contains('is-closing');
+        if (shouldAnimate) playPanelViewTransition(previousView, nextView, focus ? focusTarget : null, fromHeight, targetHeight);
+        else if (focus && panel.classList.contains('show')) schedulePanelFocus(focusTarget);
     }
 
     function schedulePanelFocus(target) {
@@ -4207,6 +4490,11 @@
         if (!panel || !panel.classList.contains('show')) return;
         const immediate = Boolean(options?.immediate);
         if (panel.classList.contains('is-closing') && !immediate) return;
+        panelViewMotionGeneration += 1;
+        panelViewMotionAnimations.forEach(animation => animation.cancel());
+        panelViewMotionAnimations = [];
+        q('mi-main-view')?.classList.remove('mi-view-transitioning');
+        q('mi-set')?.classList.remove('mi-view-transitioning');
         closeDropdown(false);
         q('mi-lang-picker')?.classList.remove('open');
         q('mi-lang-menu')?.classList.remove('show');
@@ -4323,6 +4611,8 @@
             if (modelSyncStatus === 'cached') button.classList.add('cached');
             button.title = error ? `${t('refresh_list')} | ${error}` : `${t('refresh_list')} | ${getSyncLabel()}`;
         }
+        const liveNote = q('mi-drop')?.querySelector('.mi-menu-live-note');
+        if (liveNote) liveNote.textContent = getSyncLabel();
         updateInfo();
     }
 
@@ -4741,6 +5031,53 @@
         </button>`;
     }
 
+    function getModelFamilyLabel(id) {
+        for (const section of MODEL_MENU_SECTIONS) {
+            for (const [familyName, matcher] of section.families) {
+                if (matcher.test(id)) return familyName;
+            }
+        }
+        return t('group_api');
+    }
+
+    function renderModelFamilies(items) {
+        const families = new Map();
+        items.forEach(item => {
+            const family = getModelFamilyLabel(item.id);
+            if (!families.has(family)) families.set(family, []);
+            families.get(family).push(item);
+        });
+        let html = '';
+        for (const [family, familyItems] of families) {
+            html += `<div class=mi-family><div class=mi-family-head>${escapeHtml(family)}</div>`;
+            familyItems.sort(compareMenuModelItems).forEach(item => {
+                html += renderModelOption(item.id, item.name, item.entry);
+            });
+            html += `</div>`;
+        }
+        return html;
+    }
+
+    function renderModelMenuSection(title, items, className = '') {
+        if (!items.length) return '';
+        return `<div class='mi-menu-section ${className}'>
+            <div class='mi-opt-grp'><span>${escapeHtml(title)}</span><span class='mi-group-count'>${items.length}</span></div>
+            ${renderModelFamilies(items)}
+        </div>`;
+    }
+
+    function renderOfflineModelSection(items, expanded) {
+        if (!items.length) return '';
+        const label = t(expanded ? 'hide_offline_models' : 'show_offline_models');
+        return `<div class='mi-menu-section mi-offline-section ${expanded ? 'is-expanded' : ''}'>
+            <button type='button' class='mi-offline-toggle' data-action='toggle-offline' aria-expanded='${expanded ? 'true' : 'false'}' title='${escapeHtml(label)}'>
+                <span class='mi-offline-toggle-label'><span class='mi-offline-dot' aria-hidden='true'></span>${escapeHtml(t('offline_models'))}</span>
+                <span class='mi-offline-toggle-meta'><span class='mi-group-count'>${items.length}</span><span class='mi-offline-chevron' aria-hidden='true'></span></span>
+            </button>
+            ${expanded ? `<div class='mi-offline-body'>${renderModelFamilies(items)}</div>` : ''}
+        </div>`;
+    }
+
     function getMenuFilter() {
         const raw = String(modelMenuQuery || '').trim();
         const slash = raw.startsWith('/');
@@ -4751,6 +5088,23 @@
             terms: query.toLowerCase().split(/\s+/).filter(Boolean),
             agentOnly: modelMenuAgentOnly || slash
         };
+    }
+
+    function getDropdownRenderSignature(filter) {
+        const apiKey = S.api.map(item => [item.id, item.name, item.tokens, item.categoryLabel, item.deprecated ? 1 : 0].join(':')).join('|');
+        const agentKey = S.agents.map(item => [item.id, item.name, item.updatedAt].join(':')).join('|');
+        return [
+            S.lang,
+            S.model,
+            filter.raw,
+            filter.agentOnly ? 1 : 0,
+            modelMenuOfflineExpanded ? 1 : 0,
+            modelSyncStatus,
+            [...liveApiModelIds].join('|'),
+            apiKey,
+            S.custom.join('|'),
+            agentKey
+        ].join('§');
     }
 
     function menuMatches(values, terms) {
@@ -4827,27 +5181,17 @@
         }
         if (!options.force && !dropdown.classList.contains('show')) return;
 
+        const signature = getDropdownRenderSignature(filter);
+        const currentOptions = dropdown.querySelector('#mi-menu-options');
+        if (currentOptions && dropdownRenderSignature === signature && !options.animateUpdate) {
+            syncMenuSearchUi(dropdown, filter);
+            return;
+        }
+
         let visibleGroups = 0;
         let html = '';
-
-        if (!filter.agentOnly && menuMatches([t('default_model'), t('auto_label'), 'auto default'], filter.terms)) {
-            visibleGroups += 1;
-            html += `
-            <div class="mi-menu-section">
-                <div class="mi-opt-grp">${escapeHtml(t('group_default'))}</div>
-                <div class="mi-family">
-                    <button type="button" role="option" tabindex="-1" aria-selected="${!S.model || S.model === 'auto'}" class="mi-opt ${(!S.model || S.model === 'auto') ? 'active' : ''}" data-id="" title="${escapeHtml(t('default_model'))}">
-                        <div class="mi-opt-body">
-                            <span class="txt">${escapeHtml(t('default_model'))}</span>
-                            <span class="sub">${escapeHtml(t('auto_label'))}</span>
-                        </div>
-                        <span class="meta"></span>
-                        <span class="mi-check" aria-hidden="true">&#10003;</span>
-                    </button>
-                </div>
-            </div>
-        `;
-        }
+        let offlineItems = [];
+        let offlineExpanded = false;
 
         const merged = new Map();
         PRESETS.forEach(([id, displayName]) => {
@@ -4860,7 +5204,6 @@
         });
 
         const mergedItems = [...merged.values()];
-        const remaining = new Set(merged.keys());
 
         const agentItems = [...S.agents];
         const selectedAgentId = getWorkspaceAgentId();
@@ -4875,35 +5218,37 @@
             html += `</div></div>`;
         }
 
-        if (!filter.agentOnly) for (const section of MODEL_MENU_SECTIONS) {
-            let sectionHtml = '';
-            for (const [familyName, matcher] of section.families) {
-                const familyItems = mergedItems
-                    .filter(item => remaining.has(item.id) && matcher.test(item.id))
-                    .filter(item => menuMatches([item.id, item.name, MENU_LABELS[item.id], item.entry?.categoryLabel, item.entry?.desc, item.entry?.reasoning, item.entry?.versionLabel], filter.terms))
-                    .sort((a, b) => ((PRESET_ORDER.get(a.id) ?? 999) - (PRESET_ORDER.get(b.id) ?? 999)) || sortModelEntries(a, b));
-                if (!familyItems.length) continue;
+        if (!filter.agentOnly) {
+            const matchingItems = mergedItems
+                .filter(item => menuMatches([item.id, item.name, MENU_LABELS[item.id], item.entry?.categoryLabel, item.entry?.desc, item.entry?.reasoning, item.entry?.versionLabel], filter.terms))
+                .sort(compareMenuModelItems);
+            const onlineItems = matchingItems.filter(item => isLiveCatalogModel(item.id) && !isPersistentSpecialModel(item.id));
+            const specialItems = matchingItems.filter(item => isPersistentSpecialModel(item.id));
+            offlineItems = matchingItems.filter(item => !isLiveCatalogModel(item.id) && !isPersistentSpecialModel(item.id));
+            offlineExpanded = modelMenuOfflineExpanded || Boolean(filter.terms.length) || offlineItems.some(item => item.id === S.model);
 
-                familyItems.forEach(item => remaining.delete(item.id));
-                sectionHtml += `<div class="mi-family"><div class="mi-family-head">${escapeHtml(familyName)}</div>`;
-                familyItems.forEach(item => { sectionHtml += renderModelOption(item.id, item.name, item.entry); });
-                sectionHtml += `</div>`;
-            }
-            if (sectionHtml) {
+            if (onlineItems.length) {
                 visibleGroups += 1;
-                html += `<div class="mi-menu-section"><div class="mi-opt-grp">${escapeHtml(t(section.titleKey))}</div>${sectionHtml}</div>`;
+                html += renderModelMenuSection(t('online_models'), onlineItems, 'mi-live-section');
+            } else if (!filter.terms.length) {
+                visibleGroups += 1;
+                html += `<div class="mi-menu-section mi-live-section mi-live-empty"><div class="mi-opt-grp"><span>${escapeHtml(t('online_models'))}</span><span class="mi-live-pulse" aria-hidden="true"></span></div><div class="mi-menu-live-note">${escapeHtml(t(modelSyncStatus === 'syncing' ? 'sync_syncing' : 'sync_idle'))}</div></div>`;
             }
-        }
 
-        const discovered = mergedItems
-            .filter(item => remaining.has(item.id))
-            .filter(item => !filter.agentOnly && menuMatches([item.id, item.name, item.entry?.desc, item.entry?.reasoning, item.entry?.versionLabel], filter.terms))
-            .sort((a, b) => sortModelEntries(a, b));
-        if (discovered.length) {
-            visibleGroups += 1;
-            html += `<div class="mi-menu-section"><div class="mi-opt-grp">${escapeHtml(t('group_api'))}</div><div class="mi-family">`;
-            discovered.forEach(item => { html += renderModelOption(item.id, item.name, item.entry); });
-            html += `</div></div>`;
+            if (menuMatches([t('default_model'), t('auto_label'), 'auto default'], filter.terms)) {
+                visibleGroups += 1;
+                html += `<div class="mi-menu-section mi-default-section"><div class="mi-opt-grp"><span>${escapeHtml(t('group_default'))}</span></div><div class="mi-family">
+                    <button type="button" role="option" tabindex="-1" aria-selected="${!S.model || S.model === 'auto'}" class="mi-opt ${(!S.model || S.model === 'auto') ? 'active' : ''}" data-id="" title="${escapeHtml(t('default_model'))}">
+                        <div class="mi-opt-body"><span class="txt">${escapeHtml(t('default_model'))}</span><span class="sub">${escapeHtml(t('auto_label'))}</span></div>
+                        <span class="meta"></span><span class="mi-check" aria-hidden="true">&#10003;</span>
+                    </button>
+                </div></div>`;
+            }
+
+            if (specialItems.length) {
+                visibleGroups += 1;
+                html += renderModelMenuSection(t('section_special'), specialItems, 'mi-special-section');
+            }
         }
 
         const customItems = S.custom
@@ -4931,6 +5276,11 @@
             html += `</div></div>`;
         }
 
+        if (!filter.agentOnly && offlineItems.length) {
+            visibleGroups += 1;
+            html += renderOfflineModelSection(offlineItems, offlineExpanded);
+        }
+
         if (visibleAgents.length && !filter.agentOnly) {
             visibleGroups += 1;
             html += `<div class="mi-menu-section mi-agent-section mi-agent-section-bottom"><div class="mi-opt-grp">${escapeHtml(t('section_workspace_agents'))}</div><div class="mi-family">`;
@@ -4949,7 +5299,14 @@
             optionsContainer.setAttribute('aria-label', t('choose_model'));
             optionsContainer.innerHTML = html;
         }
+        dropdownRenderSignature = signature;
         bindTooltipEvents(dropdown);
+        if (options.animateUpdate && dropdown.classList.contains('show') && !prefersReducedMotion()) {
+            optionsContainer.animate([
+                { opacity: 0.48, transform: 'translate3d(0, 7px, 0) scaleY(0.985)' },
+                { opacity: 1, transform: 'translate3d(0, 0, 0) scaleY(1)' }
+            ], { duration: 260, easing: 'cubic-bezier(0.16, 1, 0.3, 1)', fill: 'both' });
+        }
         const search = dropdown.querySelector('#mi-menu-search');
         if (search && keepSearchFocus && rebuiltSearch) {
             requestAnimationFrame(() => {
@@ -5445,6 +5802,15 @@
             focusDropdownEdge(edge);
         });
         $('mi-drop').onclick = event => {
+            if (event.target.closest('[data-action=toggle-offline]')) {
+                event.preventDefault();
+                event.stopPropagation();
+                modelMenuOfflineExpanded = !modelMenuOfflineExpanded;
+                dropdownRenderSignature = '';
+                renderDropdown({ force: true, animateUpdate: true });
+                requestAnimationFrame(() => $('mi-drop')?.querySelector('[data-action=toggle-offline]')?.focus({ preventScroll: true }));
+                return;
+            }
             if (event.target.closest('[data-action="clear-search"]')) {
                 event.preventDefault();
                 event.stopPropagation();
@@ -6463,7 +6829,7 @@
     opacity: 1;
     transform: translate3d(0, 0, 0);
     transform-origin: var(--mi-panel-anchor-x, calc(100% - 28px)) var(--mi-panel-anchor-y, calc(100% - 28px));
-    transition: height 0.4s var(--mi-ease-fluid);
+    transition: none;
 }
 #mi-p.is-first-paint-warmup .mi-view-stack {
     opacity: 1 !important;
@@ -6506,6 +6872,12 @@
     visibility: hidden;
     z-index: 1;
     transition: opacity 0.16s var(--mi-ease-fluid), transform 0.26s var(--mi-ease-fluid), visibility 0s linear 0.2s;
+}
+.mi-panel-view.mi-view-transitioning {
+    visibility: visible !important;
+    pointer-events: none !important;
+    will-change: transform, opacity, clip-path;
+    transition: none !important;
 }
 #mi-main-view {
     display: flex;
@@ -6861,16 +7233,16 @@
     width: calc(100% - 36px);
     max-height: min(520px, 58vh);
     overflow: auto;
-    padding: 9px;
-    border-radius: 20px;
+    padding: 8px;
+    border-radius: 18px;
     background:
-        radial-gradient(120% 84% at 10% -14%, rgba(255,255,255,0.19), transparent 48%),
-        radial-gradient(110% 96% at 100% 110%, rgba(var(--mi-bg-rgb),0.14), transparent 58%),
-        linear-gradient(180deg, rgba(40,44,53,0.82), rgba(14,17,23,0.90));
-    backdrop-filter: blur(20px) saturate(160%) brightness(1.065);
-    -webkit-backdrop-filter: blur(20px) saturate(160%) brightness(1.065);
-    border: 1px solid rgba(255,255,255,0.23);
-    box-shadow: 0 26px 64px rgba(0, 0, 0, 0.37), 0 8px 20px rgba(0, 0, 0, 0.14), inset 0 1px 0 rgba(255,255,255,0.24), inset 0 -1px 0 rgba(0,0,0,0.17);
+        radial-gradient(110% 74% at 12% -10%, rgba(255,255,255,0.16), transparent 50%),
+        radial-gradient(100% 88% at 100% 108%, rgba(var(--mi-bg-rgb),0.11), transparent 62%),
+        linear-gradient(180deg, rgba(34,38,46,0.992), rgba(11,14,20,0.996));
+    backdrop-filter: blur(16px) saturate(145%) brightness(1.045);
+    -webkit-backdrop-filter: blur(16px) saturate(145%) brightness(1.045);
+    border: 1px solid rgba(255,255,255,0.20);
+    box-shadow: 0 18px 42px rgba(0, 0, 0, 0.34), inset 0 1px 0 rgba(255,255,255,0.20), inset 0 -1px 0 rgba(0,0,0,0.14);
     opacity: 0;
     transform: translateY(-8px) scale(0.985);
     pointer-events: none;
@@ -6878,7 +7250,8 @@
     z-index: 100;
     isolation: isolate;
     contain: layout paint style;
-    transition: opacity 0.20s var(--mi-ease-fluid), transform 0.34s var(--mi-ease-liquid), visibility 0s linear 0.34s;
+    will-change: transform, opacity;
+    transition: none;
 }
 #mi-drop::before,
 #mi-drop::after {
@@ -6895,9 +7268,7 @@
         radial-gradient(90% 64% at 50% 0%, rgba(255,255,255,0.06), transparent 72%);
 }
 #mi-drop::after {
-    inset: 1px;
-    border: 1px solid rgba(255,255,255,0.035);
-    box-shadow: inset 0 -20px 32px rgba(0,0,0,0.055);
+    display: none;
 }
 #mi-drop > * { position: relative; z-index: 1; }
 #mi-drop[data-placement="above"] { transform: translateY(8px) scale(0.985); }
@@ -6907,7 +7278,15 @@
     transform: translateY(0) scale(1);
     pointer-events: auto;
     visibility: visible;
-    transition: opacity 0.24s var(--mi-ease-fluid), transform 0.46s var(--mi-ease-liquid), visibility 0s linear 0s;
+    transition: none;
+}
+#mi-drop.is-closing {
+    pointer-events: none;
+}
+#mi-drop.is-cloth-motion {
+    will-change: transform, opacity;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
 }
 #mi-drop[data-compact="true"] {
     padding: 6px;
@@ -6957,32 +7336,28 @@
 }
 .mi-menu-options {
     display: grid;
-    gap: 7px;
-    padding: 1px 1px 5px;
+    gap: 6px;
+    padding: 0 1px 4px;
 }
 .mi-menu-search {
     position: sticky;
     top: 0;
     z-index: 3;
     display: grid;
-    gap: 8px;
-    margin: 0 0 11px;
-    padding: 11px;
-    border-radius: 16px;
-    background:
-        radial-gradient(120% 118% at 12% -18%, rgba(255,255,255,0.13), transparent 48%),
-        linear-gradient(180deg, rgba(59,64,75,0.54), rgba(31,35,43,0.48));
-    border: 1px solid rgba(255,255,255,0.145);
-    box-shadow: 0 10px 24px rgba(0,0,0,0.14), inset 0 1px 0 rgba(255,255,255,0.15), inset 0 -1px 0 rgba(0,0,0,0.07);
-    backdrop-filter: blur(12px) saturate(130%);
-    -webkit-backdrop-filter: blur(12px) saturate(130%);
+    gap: 0;
+    margin: 0 0 8px;
+    padding: 5px;
+    border-radius: 14px;
+    background: rgba(255,255,255,0.045);
+    border: 1px solid rgba(255,255,255,0.09);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.09), inset 0 -1px 0 rgba(0,0,0,0.08);
 }
 .mi-menu-search:focus-within {
     border-color: rgba(var(--mi-bg-rgb), 0.54);
-    box-shadow: 0 0 0 1px rgba(var(--mi-bg-rgb), 0.19), 0 14px 30px rgba(0,0,0,0.18), inset 0 1px 0 rgba(255,255,255,0.16);
+    box-shadow: 0 0 0 1px rgba(var(--mi-bg-rgb), 0.17), 0 8px 20px rgba(0,0,0,0.14), inset 0 1px 0 rgba(255,255,255,0.12);
 }
 .mi-menu-search-head {
-    display: flex;
+    display: none;
     align-items: center;
     justify-content: space-between;
     gap: 10px;
@@ -7011,12 +7386,12 @@
     grid-template-columns: 30px minmax(0, 1fr) 28px;
     align-items: center;
     gap: 6px;
-    min-height: 42px;
+    min-height: 40px;
     padding: 0 7px 0 6px;
     border-radius: 12px;
-    background: rgba(7, 9, 13, 0.23);
-    border: 1px solid rgba(255,255,255,0.12);
-    box-shadow: inset 0 1px 0 rgba(255,255,255,0.045), inset 0 -1px 0 rgba(0,0,0,0.10);
+    background: rgba(7, 9, 13, 0.28);
+    border: 1px solid rgba(255,255,255,0.085);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.035);
     transition: border-color 0.18s var(--mi-ease), background 0.18s var(--mi-ease), box-shadow 0.18s var(--mi-ease);
 }
 .mi-menu-search:focus-within .mi-menu-search-box {
@@ -7083,7 +7458,7 @@
     font-size: 11px;
     font-weight: 600;
     letter-spacing: -0.01em;
-    display: flex;
+    display: none;
     align-items: center;
     gap: 6px;
 }
@@ -7124,8 +7499,8 @@
     align-items: center;
     padding: 10px 12px;
     border-radius: var(--mi-radius-sm);
-    background: transparent;
-    border: 1px solid transparent;
+    background: rgba(255,255,255,0.018);
+    border: 1px solid rgba(255,255,255,0.04);
     color: #fff;
     text-align: left;
     cursor: pointer;
@@ -7150,7 +7525,7 @@
 .mi-opt > * { position: relative; z-index: 1; }
 .mi-opt:hover::before { opacity: 0.62; }
 .mi-opt:hover {
-    background: rgba(255,255,255,0.1);
+    background: rgba(255,255,255,0.075);
     transform: none;
 }
 .mi-opt.active {
@@ -7247,8 +7622,8 @@
     flex: none;
     align-items: center;
     gap: 5px;
-    min-height: 20px;
-    padding: 0 7px 0 6px;
+    min-height: 18px;
+    padding: 0 6px 0 5px;
     border: 1px solid rgba(161, 255, 207, 0.27);
     border-radius: 999px;
     color: rgba(211, 255, 229, 0.98);
@@ -7256,7 +7631,7 @@
         linear-gradient(180deg, rgba(255,255,255,0.17), rgba(255,255,255,0.035)),
         rgba(52, 211, 153, 0.12);
     box-shadow: inset 0 1px 0 rgba(255,255,255,0.17), inset 0 -1px 0 rgba(0,0,0,0.14);
-    font: 760 10px/1 var(--mi-font);
+    font: 760 9px/1 var(--mi-font);
     letter-spacing: 0.025em;
     white-space: nowrap;
 }
@@ -7298,15 +7673,131 @@
 }
 .mi-menu-section {
     display: grid;
-    gap: 8px;
+    gap: 6px;
 }
 .mi-opt-grp {
-    padding: 10px 10px 2px;
+    padding: 8px 9px 1px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
     color: rgba(235,235,245,0.58);
     font-size: 11px;
     font-weight: 800;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
+    letter-spacing: 0.02em;
+}
+.mi-group-count {
+    display: inline-flex;
+    min-width: 22px;
+    height: 20px;
+    padding: 0 7px;
+    align-items: center;
+    justify-content: center;
+    border-radius: 999px;
+    background: rgba(255,255,255,0.065);
+    border: 1px solid rgba(255,255,255,0.075);
+    color: rgba(255,255,255,0.62);
+    font: 720 10px/1 var(--mi-font);
+    letter-spacing: 0;
+}
+.mi-live-section .mi-opt-grp {
+    color: rgba(179, 255, 215, 0.9);
+}
+.mi-live-section .mi-group-count {
+    color: rgba(211, 255, 229, 0.96);
+    border-color: rgba(121, 239, 177, 0.2);
+    background: rgba(52, 211, 153, 0.1);
+}
+.mi-live-empty {
+    gap: 6px;
+}
+.mi-live-pulse {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #79efb1;
+    box-shadow: 0 0 0 0 rgba(121, 239, 177, 0.3);
+    animation: miLivePulse 1.7s ease-out infinite;
+}
+.mi-menu-live-note {
+    margin: 0 6px;
+    padding: 13px 14px;
+    border-radius: 14px;
+    color: rgba(235,235,245,0.54);
+    background: rgba(255,255,255,0.026);
+    border: 1px solid rgba(255,255,255,0.045);
+    font-size: 12px;
+    font-weight: 600;
+}
+.mi-special-section {
+    padding-top: 2px;
+}
+.mi-special-section .mi-opt-grp {
+    color: rgba(175, 210, 255, 0.88);
+}
+.mi-offline-section {
+    gap: 7px;
+    margin-top: 6px;
+    padding-top: 9px;
+    border-top: 1px solid rgba(255,255,255,0.055);
+}
+.mi-offline-toggle {
+    width: 100%;
+    min-height: 42px;
+    padding: 0 12px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    border-radius: 13px;
+    border: 1px solid rgba(255,255,255,0.06);
+    background: rgba(255,255,255,0.026);
+    color: rgba(235,235,245,0.62);
+    font: 700 11px/1 var(--mi-font);
+    cursor: pointer;
+    transition: background 0.2s var(--mi-ease), border-color 0.2s var(--mi-ease), color 0.2s var(--mi-ease), transform 0.2s var(--mi-ease-fluid);
+}
+.mi-offline-toggle:hover {
+    color: rgba(255,255,255,0.82);
+    background: rgba(255,255,255,0.055);
+    border-color: rgba(255,255,255,0.1);
+}
+.mi-offline-toggle:active {
+    transform: scale(0.985);
+}
+.mi-offline-toggle:focus-visible {
+    outline: none;
+    border-color: rgba(var(--mi-bg-rgb),0.52);
+    box-shadow: 0 0 0 3px rgba(var(--mi-bg-rgb),0.14);
+}
+.mi-offline-toggle-label,
+.mi-offline-toggle-meta {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+}
+.mi-offline-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: rgba(235,235,245,0.32);
+    box-shadow: inset 0 1px 1px rgba(255,255,255,0.16);
+}
+.mi-offline-chevron {
+    width: 8px;
+    height: 8px;
+    border-right: 1.5px solid currentColor;
+    border-bottom: 1.5px solid currentColor;
+    transform: rotate(45deg) translateY(-1px);
+    transition: transform 0.3s var(--mi-ease-fluid);
+}
+.mi-offline-section.is-expanded .mi-offline-chevron {
+    transform: rotate(225deg) translate(-1px, -1px);
+}
+.mi-offline-body {
+    display: grid;
+    gap: 8px;
+    transform-origin: top center;
 }
 .mi-agent-section {
     margin-bottom: 2px;
@@ -7321,14 +7812,14 @@
 }
 .mi-family {
     display: grid;
-    gap: 4px;
-    padding: 6px;
-    border-radius: 16px;
-    background: rgba(255,255,255,0.022);
-    border: 1px solid rgba(255,255,255,0.045);
+    gap: 3px;
+    padding: 3px;
+    border-radius: 14px;
+    background: rgba(255,255,255,0.014);
+    border: 1px solid rgba(255,255,255,0.035);
 }
 .mi-family-head {
-    padding: 8px 10px 4px;
+    padding: 7px 9px 3px;
     color: rgba(255,255,255,0.86);
     font-size: 12px;
     font-weight: 700;
@@ -7336,8 +7827,8 @@
 }
 .mi-opt {
     border-radius: 12px;
-    min-height: 48px;
-    padding: 11px 12px;
+    min-height: 45px;
+    padding: 9px 11px;
 }
 .mi-opt:hover {
     background: rgba(255,255,255,0.08);
@@ -8328,6 +8819,11 @@
     border: 1px solid rgba(255,255,255,0.08);
     font-weight: 600;
 }
+@keyframes miLivePulse {
+    0% { box-shadow: 0 0 0 0 rgba(121, 239, 177, 0.28); opacity: 0.95; }
+    68% { box-shadow: 0 0 0 7px rgba(121, 239, 177, 0); opacity: 0.78; }
+    100% { box-shadow: 0 0 0 0 rgba(121, 239, 177, 0); opacity: 0.95; }
+}
 @keyframes miBadgeBounce {
     0% { transform: scale(0) rotate(-180deg); opacity: 0; }
     50% { transform: scale(1.3) rotate(10deg); }
@@ -8389,8 +8885,8 @@
         -webkit-backdrop-filter: blur(18px) url(#mi-model-injector-liquid-lens) saturate(162%) brightness(1.07);
     }
     #mi-drop {
-        backdrop-filter: blur(20px) url(#mi-model-injector-liquid-lens) saturate(160%) brightness(1.065);
-        -webkit-backdrop-filter: blur(20px) url(#mi-model-injector-liquid-lens) saturate(160%) brightness(1.065);
+        backdrop-filter: blur(16px) url(#mi-model-injector-liquid-lens) saturate(145%) brightness(1.045);
+        -webkit-backdrop-filter: blur(16px) url(#mi-model-injector-liquid-lens) saturate(145%) brightness(1.045);
     }
     .mi-effort-lens-material {
         backdrop-filter: url(#mi-model-injector-liquid-lens) blur(10px) saturate(148%) brightness(1.055);
@@ -8673,6 +9169,7 @@
         refreshWhenTokenizerReady();
         setupAutoTokenRefresh();
         scheduleWorkspaceAgentScan(300);
+        scheduleDropdownWarmRender();
 
         if (isSupportedHost() && !S.api.length) window.setTimeout(fetchModels, LOAD_DELAY);
         requestAnimationFrame(() => {
