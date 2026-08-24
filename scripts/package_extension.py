@@ -21,6 +21,8 @@ RUNTIME_FILES = (
     'manifest.json',
     'config.js',
     'content.js',
+    'content-bridge.js',
+    'background.js',
     'libs/o200k_base.js',
     'icons/icon-16.png',
     'icons/icon-32.png',

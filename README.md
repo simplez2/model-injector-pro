@@ -4,6 +4,8 @@
 
 Model Injector Pro is an independent, open-source browser extension for local model controls and diagnostics on supported ChatGPT web sessions.
 
+> **先把浏览器环境对齐，再让页面做判断。** 这不是魔法升级模型，而是尽量不让错误的时区、语言和请求头先把体验“降智”。
+
 ## 独立性与使用边界
 
 **This project is not affiliated with, endorsed by, or sponsored by OpenAI.** OpenAI、ChatGPT 及相关名称是其各自权利人的商标；本仓库仅为说明兼容目标而作必要引用。项目使用原创图标和视觉语言，不分发 OpenAI 标志或其结形商标图案。
@@ -20,6 +22,25 @@ Model Injector Pro is an independent, open-source browser extension for local mo
 - 对相关请求改写结果提供本地诊断；调试默认关闭。
 - 使用页面本地存储保存偏好，不依赖项目方后端服务。
 - 中英日俄界面与可配置强调色。
+
+- 时区与主语言自定义下拉，支持自动匹配出口 IP 的地理信息。
+- 跨页面、iframe、Worker、SharedWorker 的时区/语言一致性处理。
+
+## 防降智：让浏览器别先把自己骗了
+
+很多“模型变笨”、“页面显示不对”其实不是模型能力问题，而是浏览器同时暴露了互相矛盾的环境信号：`navigator.language` 说一种语言，默认 `Intl` 却返回另一种；页面时区显示是一个地方，`Date` 本地 getter、`Temporal` 或 `Accept-Language` 又暴露了真实环境。
+
+本项目的隐私模式专门处理这类**环境自相矛盾**：
+
+- 时区、语言、`Date` 本地时间 getter、日期字符串和默认 `Intl` locale 保持一致。
+- 同步 `navigator` 语言别名、`<html lang>` 与 `Temporal.Now`。
+- 覆盖顶层页面、`about:blank` iframe、Blob Worker 和 SharedWorker。
+- 覆盖文档首次导航以及 Fetch、图片、脚本、Ping 等请求的 `Accept-Language`。
+- 关闭后恢复原生行为，反复开关不会叠加 wrapper 或造成时间漂移。
+
+**严谨版宣传：**它能减少“环境信号互相打架”导致的错误本地化、时间显示和诊断判断；它不能提升模型智商、解锁账号权限，也不会隐藏真实 IP。浏览器原生 Service Worker、WebRTC、系统字体和网络层指纹仍属于扩展无法完全接管的边界。
+
+这就是本项目的“防降智”定位：**不是把模型吹成更聪明，而是先避免浏览器把自己伪装得前后矛盾。**
 
 ## 安装
 
@@ -57,6 +78,8 @@ npm run package
 manifest.json
 config.js
 content.js
+content-bridge.js
+background.js
 libs/o200k_base.js
 icons/icon-16.png
 icons/icon-32.png

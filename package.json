@@ -1,11 +1,11 @@
 {
   "name": "model-injector-pro",
-  "version": "1.3.2",
+  "version": "1.4.1",
   "private": true,
   "description": "Independent Manifest V3 controls and diagnostics for supported ChatGPT web sessions.",
   "type": "commonjs",
   "scripts": {
-    "verify": "node --check extension/content.js && node --check extension/config.js && node --check extension/libs/o200k_base.js && python scripts/verify_extension.py",
+    "verify": "node --check extension/content.js && node --check extension/content-bridge.js && node --check extension/background.js && node --check extension/config.js && node --check extension/libs/o200k_base.js && python scripts/verify_extension.py",
     "package": "python scripts/package_extension.py"
   },
   "repository": {

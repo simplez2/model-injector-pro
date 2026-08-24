@@ -4,7 +4,8 @@
     'use strict';
 
     const PREFIX = 'cgpt_v12_';
-    const SCRIPT_BUILD = '2026-08-03-fast-model-menu-v17';
+    const IS_TOP_FRAME = window.top === window;
+    const SCRIPT_BUILD = '2026-08-16-long-thread-perf-v21';
     const PROJECT_REPOSITORY_URL = 'https://github.com/simplez2/model-injector-pro';
     const PACKET_LOG_LIMIT = 48;
     const MODELS_ENDPOINT = '/backend-api/models';
@@ -20,7 +21,7 @@
     const BUTTON_SIZE = 56;
     const VIEW_MARGIN = 12;
     const PANEL_MAIN_HEIGHT = 680;
-    const PANEL_SETTINGS_HEIGHT = 476;
+    const PANEL_SETTINGS_HEIGHT = 604;
     const PANEL_MIN_SIDE_HEIGHT = 280;
     const PANEL_MOTION_DURATION = 400;
     const PANEL_MOTION_CLOSE_RATE = 1.12;
@@ -199,7 +200,11 @@
     ];
     const LOAD_DELAY = 1500;
     const PRESET_MAP = new Map(PRESETS.map(([id, name, thinking, group]) => [id, { id, name, thinking, group }]));
+    const TOKEN_CACHE_LIMIT = 256;
+    const TOKEN_PRECISE_CHAR_LIMIT = 12000;
     const tokenCache = new Map();
+    let preciseTokenTimer = 0;
+    let tokenBurstUntil = 0;
     let packetLog = [];
     const nativeFetch = typeof window.fetch === 'function' ? window.fetch.bind(window) : null;
     const nativeSendBeacon = typeof navigator.sendBeacon === 'function' ? navigator.sendBeacon.bind(navigator) : null;
@@ -212,6 +217,9 @@
         effort: readString('e', 'standard'),
         effortOn: readFlag('eo', false),
         debug: readFlag('d', false),
+        privacyOn: readFlag('pv', false),
+        privacyTzMode: readString('pvtz', 'auto'),
+        privacyLangMode: readString('pvlang', 'auto'),
         lang: readString('lang', 'zh-CN'),
         bgColor: readString('bg', '#007aff'),
         diagOpen: readFlag('diag_open', false),
@@ -375,6 +383,16 @@
             debug_mode: '调试模式（打开控制台查看日志）',
             privacy_title: '隐私优先',
             privacy_body: '抓包诊断仅保留在内存中，关闭调试模式后会立即清除。',
+            privacy_spoof: 'IP 伪装',
+            privacy_subtitle: '时区与语言伪装（默认关闭）',
+            privacy_timezone: '时区',
+            privacy_language: '主语言',
+            privacy_auto: '自动匹配出口 IP',
+            privacy_status_none: '未检测出口位置',
+            privacy_status_loading: '正在检测出口位置…',
+            privacy_status_geo: '出口位置',
+            privacy_status_error: '检测失败，请重试',
+            privacy_refresh: '重新检测',
             diagnostic_clear: '清除诊断',
             language: '语言',
             choose_model: '选择模型',
@@ -479,6 +497,16 @@
             debug_mode: 'Debug mode (open console for logs)',
             privacy_title: 'Privacy by default',
             privacy_body: 'Packet diagnostics stay in memory and are erased when debug mode is turned off.',
+            privacy_spoof: 'IP spoofing',
+            privacy_subtitle: 'Timezone & language masking (off by default)',
+            privacy_timezone: 'Timezone',
+            privacy_language: 'Main language',
+            privacy_auto: 'Match egress IP automatically',
+            privacy_status_none: 'Egress location not detected yet',
+            privacy_status_loading: 'Detecting egress location…',
+            privacy_status_geo: 'Egress',
+            privacy_status_error: 'Detection failed, try again',
+            privacy_refresh: 'Redetect',
             diagnostic_clear: 'Clear diagnostics',
             language: 'Language',
             choose_model: 'Choose model',
@@ -583,6 +611,16 @@
             debug_mode: 'デバッグモード（コンソールで確認）',
             privacy_title: 'プライバシー優先',
             privacy_body: 'パケット診断はメモリ内だけに保持され、デバッグモードをオフにすると消去されます。',
+            privacy_spoof: 'IP なりすまし',
+            privacy_subtitle: 'タイムゾーンと言語の偽装（既定はオフ）',
+            privacy_timezone: 'タイムゾーン',
+            privacy_language: '主要言語',
+            privacy_auto: '出口 IP に自動一致',
+            privacy_status_none: '出口位置は未検出です',
+            privacy_status_loading: '出口位置を検出中…',
+            privacy_status_geo: '出口',
+            privacy_status_error: '検出に失敗しました。再試行してください',
+            privacy_refresh: '再検出',
             diagnostic_clear: '診断を消去',
             language: '言語',
             choose_model: 'モデルを選択',
@@ -687,6 +725,16 @@
             debug_mode: 'Режим отладки (смотрите консоль)',
             privacy_title: 'Приватность по умолчанию',
             privacy_body: 'Диагностика пакетов хранится только в памяти и очищается при отключении режима отладки.',
+            privacy_spoof: 'IP-маскировка',
+            privacy_subtitle: 'Маскировка часового пояса и языка (по умолчанию выкл.)',
+            privacy_timezone: 'Часовой пояс',
+            privacy_language: 'Основной язык',
+            privacy_auto: 'Авто по выходному IP',
+            privacy_status_none: 'Выходное расположение не определено',
+            privacy_status_loading: 'Определение выходного расположения…',
+            privacy_status_geo: 'Выходной IP',
+            privacy_status_error: 'Не удалось определить, повторите попытку',
+            privacy_refresh: 'Повторить',
             diagnostic_clear: 'Очистить диагностику',
             language: 'Язык',
             choose_model: 'Выберите модель',
@@ -768,6 +816,879 @@
         writePacketLog([]);
         document.documentElement.removeAttribute('data-mi-packet-log-size');
         document.documentElement.removeAttribute('data-mi-diagnostic');
+    }
+
+    // ===== Egress IP privacy spoofing (opt-in) =====
+
+    const PRIVACY_TZ_SELECT_OPTIONS = [
+        ['UTC', 'UTC'],
+        ['Asia/Shanghai', 'Asia/Shanghai'],
+        ['Asia/Hong_Kong', 'Asia/Hong_Kong'],
+        ['Asia/Macau', 'Asia/Macau'],
+        ['Asia/Taipei', 'Asia/Taipei'],
+        ['Asia/Singapore', 'Asia/Singapore'],
+        ['Asia/Kuala_Lumpur', 'Asia/Kuala_Lumpur'],
+        ['Asia/Bangkok', 'Asia/Bangkok'],
+        ['Asia/Jakarta', 'Asia/Jakarta'],
+        ['Asia/Manila', 'Asia/Manila'],
+        ['Asia/Ho_Chi_Minh', 'Asia/Ho_Chi_Minh'],
+        ['Asia/Tokyo', 'Asia/Tokyo'],
+        ['Asia/Seoul', 'Asia/Seoul'],
+        ['Asia/Kolkata', 'Asia/Kolkata'],
+        ['Asia/Dubai', 'Asia/Dubai'],
+        ['Europe/London', 'Europe/London'],
+        ['Europe/Dublin', 'Europe/Dublin'],
+        ['Europe/Paris', 'Europe/Paris'],
+        ['Europe/Berlin', 'Europe/Berlin'],
+        ['Europe/Zurich', 'Europe/Zurich'],
+        ['Europe/Rome', 'Europe/Rome'],
+        ['Europe/Madrid', 'Europe/Madrid'],
+        ['Europe/Amsterdam', 'Europe/Amsterdam'],
+        ['Europe/Stockholm', 'Europe/Stockholm'],
+        ['Europe/Warsaw', 'Europe/Warsaw'],
+        ['Europe/Moscow', 'Europe/Moscow'],
+        ['America/New_York', 'America/New_York'],
+        ['America/Toronto', 'America/Toronto'],
+        ['America/Chicago', 'America/Chicago'],
+        ['America/Denver', 'America/Denver'],
+        ['America/Phoenix', 'America/Phoenix'],
+        ['America/Los_Angeles', 'America/Los_Angeles'],
+        ['America/Vancouver', 'America/Vancouver'],
+        ['America/Mexico_City', 'America/Mexico_City'],
+        ['America/Sao_Paulo', 'America/Sao_Paulo'],
+        ['America/Buenos_Aires', 'America/Buenos_Aires'],
+        ['Australia/Sydney', 'Australia/Sydney'],
+        ['Australia/Melbourne', 'Australia/Melbourne'],
+        ['Pacific/Auckland', 'Pacific/Auckland']
+    ];
+
+    const PRIVACY_LANG_SELECT_OPTIONS = [
+        ['zh-CN', '\u4e2d\u6587\u7b80\u4f53'],
+        ['zh-TW', '\u4e2d\u6587\u7e41\u9ad4'],
+        ['en', 'English'],
+        ['en-GB', 'English (UK)'],
+        ['ja', '\u65e5\u672c\u8a9e'],
+        ['ko', '\ud55c\uad6d\uc5b4'],
+        ['de', 'Deutsch'],
+        ['fr', 'Fran\u00e7ais'],
+        ['es', 'Espa\u00f1ol'],
+        ['es-MX', 'Espa\u00f1ol (MX)'],
+        ['pt-BR', 'Portugu\u00eas (BR)'],
+        ['pt', 'Portugu\u00eas'],
+        ['it', 'Italiano'],
+        ['nl', 'Nederlands'],
+        ['sv', 'Svenska'],
+        ['pl', 'Polski'],
+        ['tr', 'T\u00fcrk\u00e7e'],
+        ['ru', '\u0420\u0443\u0441\u0441\u043a\u0438\u0439'],
+        ['uk', '\u0423\u043a\u0440\u0430\u0457\u043d\u0441\u044c\u043a\u0430'],
+        ['ar', '\u0627\u0644\u0639\u0631\u0628\u064a\u0629'],
+        ['he', '\u05e2\u05d1\u05e8\u05d9\u05ea'],
+        ['hi', '\u0939\u093f\u0928\u094d\u0926\u0940'],
+        ['th', '\u0e44\u0e17\u0e22'],
+        ['vi', 'Ti\u1ebfng Vi\u1ec7t'],
+        ['id', 'Bahasa Indonesia'],
+        ['ms', 'Bahasa Melayu']
+    ];
+
+    const privacyState = {
+        originals: null,
+        nativeDate: window.Date,
+        nativeDateTimeFormat: Intl.DateTimeFormat,
+        formatterCache: new Map()
+    };
+    const privacyBridgePending = new Map();
+    let privacyBridgeSeq = 0;
+
+    window.addEventListener('mi-geo-response', event => {
+        const detail = event.detail;
+        if (!detail || typeof detail.seq === 'undefined') return;
+        const resolve = privacyBridgePending.get(detail.seq);
+        if (!resolve) return;
+        privacyBridgePending.delete(detail.seq);
+        resolve(detail);
+    });
+
+    function requestFromBackground(message) {
+        return new Promise(resolve => {
+            const seq = ++privacyBridgeSeq;
+            privacyBridgePending.set(seq, resolve);
+            window.dispatchEvent(new CustomEvent('mi-geo-request', {
+                detail: { seq, message }
+            }));
+            setTimeout(() => {
+                if (privacyBridgePending.has(seq)) {
+                    privacyBridgePending.delete(seq);
+                    resolve({ ok: false, error: 'timeout' });
+                }
+            }, 15000);
+        });
+    }
+
+    function readPrivacyGeo() { return readJson('pv_geo', null); }
+
+    function resolveSpoofValue(mode, geo, kind) {
+        if (mode && mode !== 'auto') return mode;
+        if (!geo) return '';
+        if (kind === 'tz') return geo.timezone || '';
+        const first = Array.isArray(geo.languages) ? geo.languages[0] : '';
+        return first || '';
+    }
+
+    function getPrivacyDateFormatter(timeZone) {
+        let formatter = privacyState.formatterCache.get(timeZone);
+        if (!formatter) {
+            formatter = new privacyState.nativeDateTimeFormat('en-US-u-ca-gregory-nu-latn', {
+                timeZone,
+                hourCycle: 'h23',
+                year: 'numeric',
+                month: '2-digit',
+                day: '2-digit',
+                weekday: 'short',
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit'
+            });
+            privacyState.formatterCache.set(timeZone, formatter);
+        }
+        return formatter;
+    }
+
+    function computeZonedDateParts(date, timeZone) {
+        if (!date || !Number.isFinite(date.getTime())) return null;
+        try {
+            const raw = {};
+            for (const part of getPrivacyDateFormatter(timeZone).formatToParts(date)) {
+                if (part.type !== 'literal') raw[part.type] = part.value;
+            }
+            const parts = {
+                year: Number(raw.year),
+                month: Number(raw.month),
+                day: Number(raw.day),
+                hour: Number(raw.hour),
+                minute: Number(raw.minute),
+                second: Number(raw.second),
+                millisecond: date.getUTCMilliseconds()
+            };
+            if (!Object.values(parts).every(Number.isFinite)) return null;
+            parts.weekday = new privacyState.nativeDate(
+                privacyState.nativeDate.UTC(parts.year, parts.month - 1, parts.day)
+            ).getUTCDay();
+            return parts;
+        } catch {
+            return null;
+        }
+    }
+
+    function computeSpoofedOffset(date, timeZone) {
+        const parts = computeZonedDateParts(date, timeZone);
+        if (!parts) return null;
+        const asUtc = privacyState.nativeDate.UTC(
+            parts.year,
+            parts.month - 1,
+            parts.day,
+            parts.hour,
+            parts.minute,
+            parts.second,
+            parts.millisecond
+        );
+        const offsetMinutesEastOfUtc = Math.round((asUtc - date.getTime()) / 60000);
+        return Number.isFinite(offsetMinutesEastOfUtc) ? -offsetMinutesEastOfUtc : null;
+    }
+
+    function privacyFunctionProxy(nativeFunction, handler) {
+        return new Proxy(nativeFunction, {
+            apply(target, receiver, args) {
+                return handler(target, receiver, args);
+            }
+        });
+    }
+
+    function installPrivacyMethod(originals, key, target, name, handler) {
+        const descriptor = Object.getOwnPropertyDescriptor(target, name);
+        if (!descriptor || typeof descriptor.value !== 'function') return;
+        originals.methodDescriptors ||= {};
+        originals.methodDescriptors[key] = { target, name, descriptor };
+        Object.defineProperty(target, name, {
+            ...descriptor,
+            value: privacyFunctionProxy(descriptor.value, handler)
+        });
+    }
+
+    function privacyLocaleList(language) {
+        if (!language) return [];
+        const values = [language];
+        const base = language.split('-')[0];
+        if (base && base !== language) values.push(base);
+        return [...new Set(values)];
+    }
+
+    function privacyLocaleOptions(options, timeZone, mode) {
+        const next = options && typeof options === 'object' ? { ...options } : {};
+        if (timeZone && !next.timeZone) next.timeZone = timeZone;
+        const hasStyle = next.dateStyle || next.timeStyle;
+        const hasComponent = [
+            'weekday', 'era', 'year', 'month', 'day', 'dayPeriod',
+            'hour', 'minute', 'second', 'fractionalSecondDigits', 'timeZoneName'
+        ].some(key => next[key] !== undefined);
+        if (!hasStyle && !hasComponent) {
+            if (mode !== 'time') Object.assign(next, { year: 'numeric', month: 'numeric', day: 'numeric' });
+            if (mode !== 'date') Object.assign(next, { hour: 'numeric', minute: 'numeric', second: 'numeric' });
+        }
+        return next;
+    }
+
+    function formatPrivacyDateString(date, timeZone, includeDate, includeTime) {
+        if (!Number.isFinite(date.getTime())) return 'Invalid Date';
+        const parts = computeZonedDateParts(date, timeZone);
+        const offset = computeSpoofedOffset(date, timeZone);
+        if (!parts || offset == null) return 'Invalid Date';
+        const weekdays = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+        const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+        const pad = value => String(value).padStart(2, '0');
+        const dateText = `${weekdays[parts.weekday]} ${months[parts.month - 1]} ${pad(parts.day)} ${parts.year}`;
+        const sign = offset > 0 ? '-' : '+';
+        const absolute = Math.abs(offset);
+        const offsetText = `${sign}${pad(Math.floor(absolute / 60))}${pad(absolute % 60)}`;
+        let zoneName = timeZone;
+        try {
+            const formatter = new privacyState.nativeDateTimeFormat('en-US', { timeZone, timeZoneName: 'long' });
+            zoneName = formatter.formatToParts(date).find(part => part.type === 'timeZoneName')?.value || timeZone;
+        } catch {}
+        const timeText = `${pad(parts.hour)}:${pad(parts.minute)}:${pad(parts.second)} GMT${offsetText} (${zoneName})`;
+        if (includeDate && includeTime) return `${dateText} ${timeText}`;
+        return includeDate ? dateText : timeText;
+    }
+
+    function installIntlPrivacySpoof(originals, timeZone, language) {
+        originals.intlConstructors = {};
+        for (const name of [
+            'DateTimeFormat', 'NumberFormat', 'Collator', 'PluralRules',
+            'RelativeTimeFormat', 'ListFormat', 'DisplayNames', 'Segmenter'
+        ]) {
+            const NativeConstructor = Intl[name];
+            if (typeof NativeConstructor !== 'function') continue;
+            let proxy;
+            const normalize = args => {
+                const next = [...args];
+                if (language && next[0] == null) next[0] = language;
+                if (name === 'DateTimeFormat' && timeZone) {
+                    const options = next[1] && typeof next[1] === 'object' ? { ...next[1] } : {};
+                    if (!options.timeZone) options.timeZone = timeZone;
+                    next[1] = options;
+                }
+                return next;
+            };
+            proxy = new Proxy(NativeConstructor, {
+                apply(target, receiver, args) {
+                    return Reflect.apply(target, receiver, normalize(args));
+                },
+                construct(target, args, newTarget) {
+                    return Reflect.construct(target, normalize(args), newTarget === proxy ? target : newTarget);
+                }
+            });
+            originals.intlConstructors[name] = NativeConstructor;
+            Intl[name] = proxy;
+        }
+    }
+    const PRIVACY_BROADCAST_CHANNEL = '__mi_privacy_config_v2';
+
+    function privacyWorkerBootstrap(initialConfig) {
+        'use strict';
+        const state = { originals: null };
+        const NativeDate = Date;
+        const NativeDateTimeFormat = Intl.DateTimeFormat;
+        const proxy = (native, handler) => new Proxy(native, {
+            apply: (target, receiver, args) => handler(target, receiver, args)
+        });
+        const dateParts = (date, timeZone) => {
+            if (!Number.isFinite(date.getTime())) return null;
+            try {
+                const raw = {};
+                const formatter = new NativeDateTimeFormat('en-US-u-ca-gregory-nu-latn', {
+                    timeZone, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit',
+                    weekday: 'short', hour: '2-digit', minute: '2-digit', second: '2-digit'
+                });
+                for (const part of formatter.formatToParts(date)) if (part.type !== 'literal') raw[part.type] = part.value;
+                const result = {
+                    year: +raw.year, month: +raw.month, day: +raw.day,
+                    hour: +raw.hour, minute: +raw.minute, second: +raw.second,
+                    millisecond: date.getUTCMilliseconds()
+                };
+                if (!Object.values(result).every(Number.isFinite)) return null;
+                result.weekday = new NativeDate(NativeDate.UTC(result.year, result.month - 1, result.day)).getUTCDay();
+                return result;
+            } catch { return null; }
+        };
+        const offset = (date, timeZone) => {
+            const value = dateParts(date, timeZone);
+            if (!value) return null;
+            return -Math.round((NativeDate.UTC(
+                value.year, value.month - 1, value.day, value.hour,
+                value.minute, value.second, value.millisecond
+            ) - date.getTime()) / 60000);
+        };
+        const dateString = (date, timeZone, includeDate, includeTime) => {
+            const value = dateParts(date, timeZone);
+            const zoneOffset = offset(date, timeZone);
+            if (!value || zoneOffset == null) return 'Invalid Date';
+            const weekdays = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+            const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+            const pad = item => String(item).padStart(2, '0');
+            const dateText = `${weekdays[value.weekday]} ${months[value.month - 1]} ${pad(value.day)} ${value.year}`;
+            const absolute = Math.abs(zoneOffset);
+            const offsetText = `${zoneOffset > 0 ? '-' : '+'}${pad(Math.floor(absolute / 60))}${pad(absolute % 60)}`;
+            const timeText = `${pad(value.hour)}:${pad(value.minute)}:${pad(value.second)} GMT${offsetText} (${timeZone})`;
+            return includeDate && includeTime ? `${dateText} ${timeText}` : includeDate ? dateText : timeText;
+        };
+        const restore = () => {
+            const originals = state.originals;
+            if (!originals) return;
+            state.originals = null;
+            for (const [name, constructor] of Object.entries(originals.intl || {})) Intl[name] = constructor;
+            for (const item of Object.values(originals.methods || {})) Object.defineProperty(item.target, item.name, item.descriptor);
+            if (originals.navigator) for (const [name, descriptor] of Object.entries(originals.navigator.descriptors)) {
+                if (descriptor) Object.defineProperty(originals.navigator.prototype, name, descriptor);
+                else delete originals.navigator.prototype[name];
+            }
+            if (originals.temporal && typeof Temporal !== 'undefined') {
+                for (const [name, method] of Object.entries(originals.temporal)) Temporal.Now[name] = method;
+            }
+            self.Date = originals.globalDate || NativeDate;
+        };
+        const apply = config => {
+            restore();
+            if (!config?.enabled) return;
+            const timeZone = config.timeZone || '';
+            const language = config.language || '';
+            const originals = { intl: {}, methods: {}, navigator: null, temporal: null, globalDate: self.Date };
+            const replace = (key, target, name, handler) => {
+                const descriptor = Object.getOwnPropertyDescriptor(target, name);
+                if (!descriptor || typeof descriptor.value !== 'function') return;
+                originals.methods[key] = { target, name, descriptor };
+                Object.defineProperty(target, name, { ...descriptor, value: proxy(descriptor.value, handler) });
+            };
+            for (const name of ['DateTimeFormat', 'NumberFormat', 'Collator', 'PluralRules', 'RelativeTimeFormat', 'ListFormat', 'DisplayNames', 'Segmenter']) {
+                const NativeConstructor = Intl[name];
+                if (typeof NativeConstructor !== 'function') continue;
+                let wrapped;
+                const normalize = args => {
+                    const next = [...args];
+                    if (language && next[0] == null) next[0] = language;
+                    if (name === 'DateTimeFormat' && timeZone) {
+                        const options = next[1] && typeof next[1] === 'object' ? { ...next[1] } : {};
+                        if (!options.timeZone) options.timeZone = timeZone;
+                        next[1] = options;
+                    }
+                    return next;
+                };
+                wrapped = new Proxy(NativeConstructor, {
+                    apply: (target, receiver, args) => Reflect.apply(target, receiver, normalize(args)),
+                    construct: (target, args, newTarget) => Reflect.construct(target, normalize(args), newTarget === wrapped ? target : newTarget)
+                });
+                originals.intl[name] = NativeConstructor;
+                Intl[name] = wrapped;
+            }
+            if (timeZone) {
+                let DateProxy;
+                DateProxy = new Proxy(NativeDate, {
+                    apply: () => dateString(new NativeDate(), timeZone, true, true),
+                    construct: (target, args, newTarget) => Reflect.construct(target, args, newTarget === DateProxy ? target : newTarget)
+                });
+                self.Date = DateProxy;
+                replace('offset', NativeDate.prototype, 'getTimezoneOffset', (native, receiver) => offset(receiver, timeZone) ?? Reflect.apply(native, receiver, []));
+                const getters = { getFullYear: 'year', getYear: 'year', getMonth: 'month', getDate: 'day', getDay: 'weekday', getHours: 'hour', getMinutes: 'minute', getSeconds: 'second', getMilliseconds: 'millisecond' };
+                for (const [name, partName] of Object.entries(getters)) replace(name, NativeDate.prototype, name, (native, receiver) => {
+                    const value = dateParts(receiver, timeZone);
+                    if (!value) return Reflect.apply(native, receiver, []);
+                    if (name === 'getMonth') return value[partName] - 1;
+                    if (name === 'getYear') return value[partName] - 1900;
+                    return value[partName];
+                });
+                replace('toString', NativeDate.prototype, 'toString', (_native, receiver) => dateString(receiver, timeZone, true, true));
+                replace('toDateString', NativeDate.prototype, 'toDateString', (_native, receiver) => dateString(receiver, timeZone, true, false));
+                replace('toTimeString', NativeDate.prototype, 'toTimeString', (_native, receiver) => dateString(receiver, timeZone, false, true));
+            }
+            if (language && typeof navigator !== 'undefined') {
+                const values = [language];
+                const base = language.split('-')[0];
+                if (base && base !== language) values.push(base);
+                const prototype = Object.getPrototypeOf(navigator);
+                originals.navigator = { prototype, descriptors: {} };
+                for (const [name, getter] of [['language', () => values[0]], ['languages', () => values.slice()], ['userLanguage', () => values[0]], ['browserLanguage', () => values[0]], ['systemLanguage', () => values[0]]]) {
+                    const descriptor = Object.getOwnPropertyDescriptor(prototype, name);
+                    originals.navigator.descriptors[name] = descriptor || null;
+                    Object.defineProperty(prototype, name, {
+                        configurable: true,
+                        enumerable: descriptor?.enumerable ?? true,
+                        get: proxy(descriptor?.get || function () {}, () => getter())
+                    });
+                }
+            }
+            if (timeZone && typeof Temporal !== 'undefined' && Temporal.Now) {
+                originals.temporal = {};
+                const instant = Temporal.Now.instant.bind(Temporal.Now);
+                for (const [name, handler] of [
+                    ['timeZoneId', () => timeZone],
+                    ['zonedDateTimeISO', () => instant().toZonedDateTimeISO(timeZone)],
+                    ['plainDateTimeISO', () => instant().toZonedDateTimeISO(timeZone).toPlainDateTime()],
+                    ['plainDateISO', () => instant().toZonedDateTimeISO(timeZone).toPlainDate()],
+                    ['plainTimeISO', () => instant().toZonedDateTimeISO(timeZone).toPlainTime()]
+                ]) if (typeof Temporal.Now[name] === 'function') {
+                    originals.temporal[name] = Temporal.Now[name];
+                    Temporal.Now[name] = proxy(Temporal.Now[name], handler);
+                }
+            }
+            state.originals = originals;
+        };
+        apply(initialConfig);
+        try {
+            const channel = new BroadcastChannel('__mi_privacy_config_v2');
+            channel.addEventListener('message', event => apply(event.data));
+        } catch {}
+    }
+
+    function installWorkerPrivacySpoof(originals, timeZone, language) {
+        const workerUrls = new Set();
+        const sharedWorkerUrls = new Map();
+        const createWrappedUrl = (url, options, persistent = false) => {
+            const absolute = new URL(String(url), document.baseURI).href;
+            const isModule = Boolean(options && typeof options === 'object' && options.type === 'module');
+            const cacheKey = `${isModule ? 'module' : 'classic'}\n${absolute}`;
+            if (persistent && sharedWorkerUrls.has(cacheKey)) return sharedWorkerUrls.get(cacheKey);
+            const bootstrap = `;(${privacyWorkerBootstrap.toString()})(${JSON.stringify({ enabled: true, timeZone, language })});`;
+            const source = isModule
+                ? `${bootstrap}\nimport ${JSON.stringify(absolute)};`
+                : `${bootstrap}\nimportScripts(${JSON.stringify(absolute)});`;
+            const wrappedUrl = URL.createObjectURL(new Blob([source], { type: 'text/javascript' }));
+            workerUrls.add(wrappedUrl);
+            if (persistent) sharedWorkerUrls.set(cacheKey, wrappedUrl);
+            return wrappedUrl;
+        };
+
+        if (typeof Worker === 'function') {
+            const NativeWorker = Worker;
+            let WorkerProxy;
+            WorkerProxy = new Proxy(NativeWorker, {
+                construct(target, args, newTarget) {
+                    let wrappedUrl = '';
+                    try {
+                        wrappedUrl = createWrappedUrl(args[0], args[1]);
+                        const worker = Reflect.construct(target, [wrappedUrl, args[1]], newTarget === WorkerProxy ? target : newTarget);
+                        setTimeout(() => {
+                            URL.revokeObjectURL(wrappedUrl);
+                            workerUrls.delete(wrappedUrl);
+                        }, 60000);
+                        return worker;
+                    } catch {
+                        if (wrappedUrl) {
+                            URL.revokeObjectURL(wrappedUrl);
+                            workerUrls.delete(wrappedUrl);
+                        }
+                        return Reflect.construct(target, args, newTarget === WorkerProxy ? target : newTarget);
+                    }
+                }
+            });
+            originals.worker = NativeWorker;
+            window.Worker = WorkerProxy;
+        }
+
+        if (typeof SharedWorker === 'function') {
+            const NativeSharedWorker = SharedWorker;
+            let SharedWorkerProxy;
+            SharedWorkerProxy = new Proxy(NativeSharedWorker, {
+                construct(target, args, newTarget) {
+                    try {
+                        const wrappedUrl = createWrappedUrl(args[0], args[1], true);
+                        return Reflect.construct(target, [wrappedUrl, args[1]], newTarget === SharedWorkerProxy ? target : newTarget);
+                    } catch {
+                        return Reflect.construct(target, args, newTarget === SharedWorkerProxy ? target : newTarget);
+                    }
+                }
+            });
+            originals.sharedWorker = NativeSharedWorker;
+            window.SharedWorker = SharedWorkerProxy;
+        }
+
+        if (workerUrls.size) originals.workerUrls = workerUrls;
+    }
+
+    function broadcastPrivacyConfig(enabled, timeZone = '', language = '') {
+        if (typeof BroadcastChannel !== 'function') return;
+        try {
+            const channel = new BroadcastChannel(PRIVACY_BROADCAST_CHANNEL);
+            channel.postMessage({ enabled, timeZone, language });
+            channel.close();
+        } catch {}
+    }
+    function installPrivacySpoof(timeZone, language) {
+        const originals = { methodDescriptors: {} };
+        try {
+            installIntlPrivacySpoof(originals, timeZone, language);
+
+            if (timeZone) {
+                const NativeDate = privacyState.nativeDate;
+                const datePrototype = NativeDate.prototype;
+                originals.globalDate = window.Date;
+                let DateProxy;
+                DateProxy = new Proxy(NativeDate, {
+                    apply() {
+                        return formatPrivacyDateString(new NativeDate(), timeZone, true, true);
+                    },
+                    construct(target, args, newTarget) {
+                        return Reflect.construct(target, args, newTarget === DateProxy ? target : newTarget);
+                    }
+                });
+                window.Date = DateProxy;
+
+                installPrivacyMethod(originals, 'date.getTimezoneOffset', datePrototype, 'getTimezoneOffset', (native, receiver) => {
+                    const spoofed = computeSpoofedOffset(receiver, timeZone);
+                    return spoofed == null ? Reflect.apply(native, receiver, []) : spoofed;
+                });
+
+                const dateGetterParts = {
+                    getFullYear: 'year',
+                    getYear: 'year',
+                    getMonth: 'month',
+                    getDate: 'day',
+                    getDay: 'weekday',
+                    getHours: 'hour',
+                    getMinutes: 'minute',
+                    getSeconds: 'second',
+                    getMilliseconds: 'millisecond'
+                };
+                for (const [name, partName] of Object.entries(dateGetterParts)) {
+                    installPrivacyMethod(originals, `date.${name}`, datePrototype, name, (native, receiver) => {
+                        const parts = computeZonedDateParts(receiver, timeZone);
+                        if (!parts) return Reflect.apply(native, receiver, []);
+                        if (name === 'getMonth') return parts[partName] - 1;
+                        if (name === 'getYear') return parts[partName] - 1900;
+                        return parts[partName];
+                    });
+                }
+
+                installPrivacyMethod(originals, 'date.toString', datePrototype, 'toString', (_native, receiver) =>
+                    formatPrivacyDateString(receiver, timeZone, true, true));
+                installPrivacyMethod(originals, 'date.toDateString', datePrototype, 'toDateString', (_native, receiver) =>
+                    formatPrivacyDateString(receiver, timeZone, true, false));
+                installPrivacyMethod(originals, 'date.toTimeString', datePrototype, 'toTimeString', (_native, receiver) =>
+                    formatPrivacyDateString(receiver, timeZone, false, true));
+
+                for (const [name, mode] of [
+                    ['toLocaleString', 'all'],
+                    ['toLocaleDateString', 'date'],
+                    ['toLocaleTimeString', 'time']
+                ]) {
+                    installPrivacyMethod(originals, `date.${name}`, datePrototype, name, (native, receiver, args) => {
+                        if (!Number.isFinite(receiver.getTime())) return Reflect.apply(native, receiver, args);
+                        const locales = args[0] == null && language ? language : args[0];
+                        return new privacyState.nativeDateTimeFormat(
+                            locales,
+                            privacyLocaleOptions(args[1], timeZone, mode)
+                        ).format(receiver);
+                    });
+                }
+            }
+
+            if (language && typeof navigator !== 'undefined') {
+                const languages = privacyLocaleList(language);
+                const prototype = Object.getPrototypeOf(navigator);
+                originals.navigator = { prototype, descriptors: {} };
+                for (const [name, value] of [
+                    ['language', () => languages[0]],
+                    ['languages', () => languages.slice()],
+                    ['userLanguage', () => languages[0]],
+                    ['browserLanguage', () => languages[0]],
+                    ['systemLanguage', () => languages[0]]
+                ]) {
+                    const descriptor = Object.getOwnPropertyDescriptor(prototype, name);
+                    originals.navigator.descriptors[name] = descriptor || null;
+                    const nativeGetter = descriptor?.get || function () {};
+                    Object.defineProperty(prototype, name, {
+                        configurable: true,
+                        enumerable: descriptor?.enumerable ?? true,
+                        get: privacyFunctionProxy(nativeGetter, () => value())
+                    });
+                }
+
+                installPrivacyMethod(originals, 'number.toLocaleString', Number.prototype, 'toLocaleString', (native, receiver, args) =>
+                    Reflect.apply(native, receiver, [args[0] == null ? language : args[0], args[1]]));
+                if (typeof BigInt !== 'undefined') {
+                    installPrivacyMethod(originals, 'bigint.toLocaleString', BigInt.prototype, 'toLocaleString', (native, receiver, args) =>
+                        Reflect.apply(native, receiver, [args[0] == null ? language : args[0], args[1]]));
+                }
+                installPrivacyMethod(originals, 'string.localeCompare', String.prototype, 'localeCompare', (native, receiver, args) =>
+                    Reflect.apply(native, receiver, [args[0], args[1] == null ? language : args[1], args[2]]));
+
+                if (document.documentElement) {
+                    const root = document.documentElement;
+                    const state = { root, latestNative: root.getAttribute('lang'), applying: false, observer: null };
+                    const applyLanguage = () => {
+                        if (root.getAttribute('lang') === language) return;
+                        state.applying = true;
+                        root.setAttribute('lang', language);
+                        state.applying = false;
+                    };
+                    state.observer = new MutationObserver(() => {
+                        if (state.applying) return;
+                        const next = root.getAttribute('lang');
+                        if (next !== language) state.latestNative = next;
+                        applyLanguage();
+                    });
+                    state.observer.observe(root, { attributes: true, attributeFilter: ['lang'] });
+                    applyLanguage();
+                    originals.documentLanguage = state;
+                }
+            }
+
+            if (timeZone && typeof Temporal !== 'undefined' && Temporal.Now) {
+                originals.temporalMethods = {};
+                const instant = typeof Temporal.Now.instant === 'function'
+                    ? Temporal.Now.instant.bind(Temporal.Now)
+                    : null;
+                const replaceTemporal = (name, handler) => {
+                    if (typeof Temporal.Now[name] !== 'function') return;
+                    originals.temporalMethods[name] = Temporal.Now[name];
+                    Temporal.Now[name] = privacyFunctionProxy(Temporal.Now[name], handler);
+                };
+                replaceTemporal('timeZoneId', () => timeZone);
+                replaceTemporal('zonedDateTimeISO', (native, receiver, args) =>
+                    instant ? instant().toZonedDateTimeISO(timeZone) : Reflect.apply(native, receiver, args));
+                replaceTemporal('plainDateTimeISO', (native, receiver, args) =>
+                    instant ? instant().toZonedDateTimeISO(timeZone).toPlainDateTime() : Reflect.apply(native, receiver, args));
+                replaceTemporal('plainDateISO', (native, receiver, args) =>
+                    instant ? instant().toZonedDateTimeISO(timeZone).toPlainDate() : Reflect.apply(native, receiver, args));
+                replaceTemporal('plainTimeISO', (native, receiver, args) =>
+                    instant ? instant().toZonedDateTimeISO(timeZone).toPlainTime() : Reflect.apply(native, receiver, args));
+            }
+
+            installWorkerPrivacySpoof(originals, timeZone, language);
+            privacyState.originals = originals;
+        } catch (error) {
+            privacyState.originals = originals;
+            restorePrivacySpoof();
+            console.warn('[Model Injector] Privacy spoof installation failed', error);
+        }
+    }
+
+    function restorePrivacySpoof() {
+        const originals = privacyState.originals;
+        if (!originals) return;
+        privacyState.originals = null;
+        try {
+            for (const [name, constructor] of Object.entries(originals.intlConstructors || {})) {
+                Intl[name] = constructor;
+            }
+            for (const item of Object.values(originals.methodDescriptors || {})) {
+                Object.defineProperty(item.target, item.name, item.descriptor);
+            }
+            if (originals.globalDate) window.Date = originals.globalDate;
+            if (originals.navigator) {
+                for (const [name, descriptor] of Object.entries(originals.navigator.descriptors)) {
+                    if (descriptor) Object.defineProperty(originals.navigator.prototype, name, descriptor);
+                    else delete originals.navigator.prototype[name];
+                }
+            }
+            if (originals.documentLanguage) {
+                const state = originals.documentLanguage;
+                state.observer?.disconnect();
+                if (state.latestNative == null) state.root.removeAttribute('lang');
+                else state.root.setAttribute('lang', state.latestNative);
+            }
+            if (originals.temporalMethods && typeof Temporal !== 'undefined') {
+                for (const [name, method] of Object.entries(originals.temporalMethods)) {
+                    Temporal.Now[name] = method;
+                }
+            }
+            if (originals.worker) window.Worker = originals.worker;
+            if (originals.sharedWorker) window.SharedWorker = originals.sharedWorker;
+            for (const url of originals.workerUrls || []) {
+                try { URL.revokeObjectURL(url); } catch {}
+            }
+        } catch (error) {
+            console.warn('[Model Injector] Privacy spoof restoration failed', error);
+        }
+    }
+
+    function applyPrivacySpoof() {
+        restorePrivacySpoof();
+        if (!S.privacyOn) {
+            broadcastPrivacyConfig(false);
+            return;
+        }
+        const geo = readPrivacyGeo();
+        const timeZone = resolveSpoofValue(S.privacyTzMode, geo, 'tz');
+        const language = resolveSpoofValue(S.privacyLangMode, geo, 'lang');
+        if (timeZone || language) installPrivacySpoof(timeZone, language);
+        broadcastPrivacyConfig(Boolean(timeZone || language), timeZone, language);
+    }
+
+    function restorePrivacyOnStartup() {
+        applyPrivacySpoof();
+        if (!IS_TOP_FRAME) return;
+        syncAcceptLanguageRule();
+        if (S.privacyOn && !readPrivacyGeo()
+            && (S.privacyTzMode === 'auto' || S.privacyLangMode === 'auto')) {
+            refreshPrivacyGeo(false);
+        }
+    }
+
+    function syncAcceptLanguageRule() {
+        let value = '';
+        if (S.privacyOn) value = resolveSpoofValue(S.privacyLangMode, readPrivacyGeo(), 'lang');
+        requestFromBackground({
+            type: 'mi-accept-language',
+            enabled: Boolean(value),
+            value
+        }).catch(() => {});
+    }
+
+    restorePrivacyOnStartup();
+
+    function formatPrivacyGeo(geo) {
+        if (!geo) return '';
+        const place = [geo.city, geo.country].filter(Boolean).join(', ')
+            || geo.countryCode || '--';
+        const ip = geo.ip ? ` \u00b7 ${geo.ip}` : '';
+        return `${t('privacy_status_geo')} ${place}${ip}`;
+    }
+
+    function renderPrivacySettings() {
+        const toggle = q('mi-sw-privacy');
+        if (toggle) {
+            toggle.classList.toggle('on', Boolean(S.privacyOn));
+            toggle.setAttribute('aria-checked', String(Boolean(S.privacyOn)));
+        }
+        const geo = readPrivacyGeo();
+        const status = q('mi-privacy-status');
+        if (status) status.textContent = geo ? formatPrivacyGeo(geo) : t('privacy_status_none');
+        renderPrivacySelect('tz', PRIVACY_TZ_SELECT_OPTIONS);
+        renderPrivacySelect('lang', PRIVACY_LANG_SELECT_OPTIONS);
+        const refresh = q('mi-privacy-refresh');
+        if (refresh) refresh.textContent = t('privacy_refresh');
+    }
+
+    const privacySelectState = {
+        tz: { open: false },
+        lang: { open: false }
+    };
+
+    function privacySelectLabel(kind, options) {
+        const mode = kind === 'tz' ? S.privacyTzMode : S.privacyLangMode;
+        if (mode === 'auto') return t('privacy_auto');
+        return options.find(([value]) => value === mode)?.[1] || mode;
+    }
+
+    function renderPrivacySelect(kind, options) {
+        const current = q(`mi-privacy-${kind}-current`);
+        const menu = q(`mi-privacy-${kind}-menu`);
+        if (!current || !menu) return;
+        current.textContent = privacySelectLabel(kind, options);
+        menu.innerHTML = [
+            ['auto', t('privacy_auto')],
+            ...options
+        ].map(([value, label]) => `
+            <button type="button" class="mi-lang-option ${value === (kind === 'tz' ? S.privacyTzMode : S.privacyLangMode) ? 'active' : ''}" data-privacy-value="${escapeHtml(value)}" role="option" aria-selected="${value === (kind === 'tz' ? S.privacyTzMode : S.privacyLangMode)}" tabindex="-1">
+                <span>${escapeHtml(label)}</span>
+            </button>
+        `).join('');
+    }
+
+    function setPrivacySelectOpen(kind, open) {
+        const picker = q(`mi-privacy-${kind}-picker`);
+        const trigger = q(`mi-privacy-${kind}-trigger`);
+        const menu = q(`mi-privacy-${kind}-menu`);
+        if (!picker || !trigger || !menu) return;
+        privacySelectState[kind].open = open;
+        picker.classList.toggle('open', open);
+        menu.classList.toggle('show', open);
+        trigger.setAttribute('aria-expanded', open ? 'true' : 'false');
+        menu.setAttribute('aria-hidden', open ? 'false' : 'true');
+        menu.toggleAttribute('inert', !open);
+    }
+
+    function selectPrivacyOption(kind, value) {
+        if (kind === 'tz') {
+            S.privacyTzMode = value;
+            save('pvtz', value);
+            applyPrivacySpoof();
+        } else {
+            S.privacyLangMode = value;
+            save('pvlang', value);
+            applyPrivacySpoof();
+            syncAcceptLanguageRule();
+        }
+        setPrivacySelectOpen(kind, false);
+        renderPrivacySettings();
+    }
+
+    function positionPrivacySelectMenu(kind) {
+        const panel = q('mi-p');
+        const trigger = q(`mi-privacy-${kind}-trigger`);
+        const menu = q(`mi-privacy-${kind}-menu`);
+        if (!panel || !trigger || !menu) return;
+
+        const panelRect = panel.getBoundingClientRect();
+        const triggerRect = trigger.getBoundingClientRect();
+        const gap = 8;
+        const edge = 10;
+        const naturalHeight = Math.max(112, menu.scrollHeight || 0);
+        const availablePanelHeight = Math.max(0, panelRect.height - (edge * 2));
+        const menuWidth = Math.min(
+            Math.max(0, panelRect.width - (edge * 2)),
+            Math.max(148, Math.round(triggerRect.width))
+        );
+        const left = clamp(
+            triggerRect.left - panelRect.left,
+            edge,
+            Math.max(edge, panelRect.width - menuWidth - edge)
+        );
+        const spaceBelow = Math.max(0, panelRect.bottom - triggerRect.bottom - gap - edge);
+        const spaceAbove = Math.max(0, triggerRect.top - panelRect.top - gap - edge);
+        const overlay = Math.max(spaceAbove, spaceBelow) < Math.min(naturalHeight, 112);
+
+        menu.style.left = `${Math.round(left)}px`;
+        menu.style.right = 'auto';
+        menu.style.width = `${Math.round(menuWidth)}px`;
+        if (overlay) {
+            menu.style.top = `${edge}px`;
+            menu.style.bottom = 'auto';
+            menu.style.maxHeight = `${Math.round(availablePanelHeight)}px`;
+            menu.dataset.compact = 'true';
+            menu.dataset.placement = 'overlay';
+            menu.style.transformOrigin = 'center center';
+            return;
+        }
+
+        const placeAbove = spaceAbove >= naturalHeight
+            || (spaceBelow < naturalHeight && spaceAbove > spaceBelow);
+        const maxHeight = Math.min(naturalHeight, placeAbove ? spaceAbove : spaceBelow);
+        menu.style.maxHeight = `${Math.round(maxHeight)}px`;
+        menu.dataset.compact = maxHeight < naturalHeight ? 'true' : 'false';
+        menu.dataset.placement = placeAbove ? 'above' : 'below';
+        menu.style.transformOrigin = placeAbove ? 'bottom right' : 'top right';
+        if (placeAbove) {
+            menu.style.top = 'auto';
+            menu.style.bottom = `${Math.round(panelRect.bottom - triggerRect.top + gap)}px`;
+        } else {
+            menu.style.top = `${Math.round(triggerRect.bottom - panelRect.top + gap)}px`;
+            menu.style.bottom = 'auto';
+        }
+    }
+
+    async function refreshPrivacyGeo(force) {
+        const status = q('mi-privacy-status');
+        if (status) status.textContent = t('privacy_status_loading');
+        const response = await requestFromBackground({ type: 'mi-geo', force: Boolean(force) });
+        if (response && response.ok && response.geo) {
+            S.privacyGeo = response.geo;
+            save('pv_geo', response.geo);
+            syncAcceptLanguageRule();
+            applyPrivacySpoof();
+            renderPrivacySettings();
+        } else if (status) {
+            status.textContent = t('privacy_status_error');
+        }
     }
 
     function resetDiagnostics() {
@@ -941,7 +1862,43 @@
             || /(^o[1-4])|thinking|reasoning|(?:^|-)t-mini$|(?:^|-)pro$|(?:^|-)wm$|alpha/i.test(id)
         );
     }
-    function mapEffort(value) { return value === 'light' ? 'min' : value === 'heavy' ? 'max' : value || 'standard'; }
+    function isWorkModel(id, entry) {
+        const model = entry || getApiEntry(id);
+        if (model?.workMode) return true;
+        return /(?:^|[.-])wm$/i.test(String(id || ''));
+    }
+    function isWorkConversationKind(kind) {
+        return /work|codex/i.test(String(kind || ''));
+    }
+    function getModelThinkingEfforts(id, entry) {
+        const model = entry || getApiEntry(id);
+        return sanitizeStringList(model?.thinkingEfforts);
+    }
+    function mapEffort(value, id) {
+        const requested = EFFORTS.includes(value) ? value : 'standard';
+        const aliases = {
+            light: ['min', 'none', 'low', 'light'],
+            standard: ['standard', 'medium'],
+            extended: ['extended', 'high'],
+            heavy: ['max', 'xhigh', 'heavy']
+        };
+        const fallback = {
+            light: 'min',
+            standard: 'standard',
+            extended: 'extended',
+            heavy: 'max'
+        };
+        const supported = getModelThinkingEfforts(id);
+        if (supported.length) {
+            const wanted = aliases[requested] || [requested];
+            const hit = wanted.find(item => supported.includes(item));
+            if (hit) return hit;
+            // A one-item catalog is usually the default advertisement, not the
+            // allowed set. GPT-5.6 Pro often only lists standard; snapping
+            // extended/heavy down to that made the old extended gear disappear.
+        }
+        return fallback[requested] || 'standard';
+    }
     function touchRecent(id) {
         if (!id || isHiddenModelId(id)) return;
         S.recent = [id, ...S.recent.filter(item => item !== id)].slice(0, 6);
@@ -950,13 +1907,18 @@
     function getEffectiveLimit() { return Number(isWorkspaceAgentSelection(S.model) ? 0 : getApiEntry(S.model)?.tokens) || 196000; }
     function getToneColor(pct) { return pct >= 90 ? '#ef4444' : pct >= 70 ? '#f59e0b' : S.bgColor; }
     function trimCache() {
-        if (tokenCache.size <= 96) return;
+        if (tokenCache.size <= TOKEN_CACHE_LIMIT) return;
         let removed = 0;
         for (const key of tokenCache.keys()) {
             tokenCache.delete(key);
             removed += 1;
-            if (removed >= 32) break;
+            if (removed >= 64) break;
         }
+    }
+    function fingerprintText(text) {
+        const value = String(text || '');
+        if (value.length <= 96) return `${value.length}:${value}`;
+        return `${value.length}:${value.slice(0, 40)}:${value.slice(-40)}`;
     }
     function q(id) { return refs[id] || null; }
     function cleanMessageText(text) {
@@ -996,29 +1958,32 @@
         const tokenizer = window.GPTTokenizer_o200k_base;
         return tokenizer && typeof tokenizer === 'object' ? tokenizer : null;
     }
-    function estimateTextTokens(text) {
+    function estimateTextTokens(text, options = {}) {
         if (!text) return 0;
+        const cheap = Math.max(1, Math.ceil(text.length / 4));
+        if (options.cheap || text.length > TOKEN_PRECISE_CHAR_LIMIT) return cheap;
         const tokenizer = getTokenizerApi();
-        if (!tokenizer) return Math.ceil(text.length / 4);
-        if (tokenCache.has(text)) return tokenCache.get(text);
+        if (!tokenizer) return cheap;
+        const key = fingerprintText(text);
+        if (tokenCache.has(key)) return tokenCache.get(key);
 
         try {
             const tokens = tokenizer.countTokens
                 ? tokenizer.countTokens(text)
                 : tokenizer.encode
                 ? tokenizer.encode(text).length
-                : Math.ceil(text.length / 4);
-            tokenCache.set(text, tokens);
+                : cheap;
+            tokenCache.set(key, tokens);
             trimCache();
             return tokens;
         } catch {
-            return Math.ceil(text.length / 4);
+            return cheap;
         }
     }
-    function countConversationTokens() {
+    function countConversationTokens(options = {}) {
         const messages = collectMessages();
         let plain = 0;
-        for (const message of messages) plain += estimateTextTokens(`${message.role}\n${message.content}`) + 4;
+        for (const message of messages) plain += estimateTextTokens(`${message.role}\n${message.content}`, options) + 4;
         return { msgs: messages.length, plain, chat: null };
     }
     function updateContextRing(pct) {
@@ -1034,8 +1999,8 @@
             panelRing.style.stroke = getToneColor(pct);
         }
     }
-    function recalcTokens() {
-        const { msgs, plain, chat } = countConversationTokens();
+    function recalcTokens(options = {}) {
+        const { msgs, plain, chat } = countConversationTokens(options);
         const used = chat ?? plain;
         const limit = getEffectiveLimit();
         const pct = limit > 0 ? Math.min(100, (used / limit) * 100) : 0;
@@ -1057,7 +2022,7 @@
         else window.clearTimeout(contextIdleJob);
         contextIdleJob = 0;
     }
-    function runScheduledTokenUpdate() {
+    function runScheduledTokenUpdate(options = {}) {
         contextTimer = 0;
         cancelContextIdleJob();
         const run = () => {
@@ -1066,15 +2031,15 @@
                 tokenRefreshDeferred = true;
                 return;
             }
-            if (!document.hidden) recalcTokens();
+            if (!document.hidden) recalcTokens(options);
         };
         if (typeof window.requestIdleCallback === 'function') {
-            contextIdleJob = window.requestIdleCallback(run, { timeout: 900 });
+            contextIdleJob = window.requestIdleCallback(run, { timeout: options.cheap ? 1600 : 900 });
         } else {
-            contextIdleJob = window.setTimeout(run, 0);
+            contextIdleJob = window.setTimeout(run, options.cheap ? 48 : 0);
         }
     }
-    function scheduleTokenUpdate(immediate = false) {
+    function scheduleTokenUpdate(immediate = false, mode = 'auto') {
         if (document.hidden) return;
         if (contextTimer) window.clearTimeout(contextTimer);
         cancelContextIdleJob();
@@ -1082,8 +2047,20 @@
             tokenRefreshDeferred = true;
             return;
         }
-        if (immediate) runScheduledTokenUpdate();
-        else contextTimer = window.setTimeout(runScheduledTokenUpdate, 650);
+        const burst = mode === 'cheap' || Date.now() < tokenBurstUntil;
+        if (mode === 'cheap') tokenBurstUntil = Date.now() + 1800;
+        const cheap = mode === 'cheap' || (mode !== 'precise' && (burst || lastStats.msgs >= 18));
+        const delay = immediate ? 0 : (cheap ? 1400 : 650);
+        const run = () => runScheduledTokenUpdate({ cheap });
+        if (immediate) run();
+        else contextTimer = window.setTimeout(run, delay);
+        if (preciseTokenTimer) window.clearTimeout(preciseTokenTimer);
+        if (cheap && mode !== 'precise') {
+            preciseTokenTimer = window.setTimeout(() => {
+                preciseTokenTimer = 0;
+                if (!document.hidden) runScheduledTokenUpdate({ cheap: false });
+            }, 2400);
+        }
     }
 
     function isPanelMotionActive() {
@@ -1117,29 +2094,24 @@
             for (const record of records) {
                 const target = record.target && record.target.nodeType === 1 ? record.target : record.target?.parentElement;
                 if (target?.closest?.('#mi')) continue;
-                if (record.type === 'characterData') {
-                    const parent = record.target?.parentElement;
-                    if (parent?.closest?.(CONVERSATION_SURFACE_SELECTOR)) relevant = true;
-                }
                 if (record.addedNodes?.length || record.removedNodes?.length) {
                     if (!relevant && mutationTouchesConversation(record, target)) relevant = true;
                     if (!shouldScanAgents && mutationTouchesWorkspaceAgent(record, target)) shouldScanAgents = true;
                 }
                 if (relevant && shouldScanAgents) break;
             }
-            if (relevant) scheduleTokenUpdate();
+            if (relevant) scheduleTokenUpdate(false, 'cheap');
             if (shouldScanAgents) scheduleWorkspaceAgentScan();
         });
 
         observer.observe(document.body, {
             childList: true,
-            subtree: true,
-            characterData: true
+            subtree: true
         });
 
         document.addEventListener('visibilitychange', () => {
             if (document.hidden) return;
-            scheduleTokenUpdate(true);
+            scheduleTokenUpdate(true, 'precise');
             scheduleWorkspaceAgentScan(250);
         }, { passive: true });
     }
@@ -1147,7 +2119,7 @@
     function refreshWhenTokenizerReady(attempt = 0) {
         if (getTokenizerApi()) {
             tokenCache.clear();
-            scheduleTokenUpdate(true);
+            scheduleTokenUpdate(true, 'precise');
             return;
         }
         if (attempt < 20) window.setTimeout(() => refreshWhenTokenizerReady(attempt + 1), 400);
@@ -2070,7 +3042,9 @@
 
     function getRewriteBlockReason(payload) {
         const kind = getConversationModeKind(payload);
-        if (kind && kind !== 'primary_assistant') return `conversation_mode=${kind}`;
+        if (kind && kind !== 'primary_assistant' && !isWorkConversationKind(kind)) {
+            return `conversation_mode=${kind}`;
+        }
 
         const structuredAgentSignal = getStructuredAgentSignal(payload);
         if (structuredAgentSignal) return `agent_signal=${structuredAgentSignal}`;
@@ -2302,8 +3276,10 @@
         };
         payload.model = S.model;
         if (S.effortOn && isThinkingModel(S.model)) {
-            rewriteInfo.thinkingEffort = mapEffort(S.effort);
+            rewriteInfo.thinkingEffort = mapEffort(S.effort, S.model);
             rewriteInfo.effortApplied = true;
+            rewriteInfo.workModel = isWorkModel(S.model);
+            rewriteInfo.supportedEfforts = getModelThinkingEfforts(S.model);
             payload.thinking_effort = rewriteInfo.thinkingEffort;
         } else if ('thinking_effort' in payload) {
             rewriteInfo.removedThinkingEffort = true;
@@ -3065,8 +4041,11 @@
             try {
                 response = await nativeFetch(...requestArgs);
             } catch (error) {
-                injectionDiagnostic.error = error?.message || String(error);
-                updateDiagnostics();
+                const isAbortError = error?.name === 'AbortError' || /abort/i.test(String(error?.message || ''));
+                if (!isAbortError) {
+                    injectionDiagnostic.error = error?.message || String(error);
+                    updateDiagnostics();
+                }
                 log('Fetch request failed', error);
                 throw error;
             }
@@ -3082,7 +4061,8 @@
                 observeWorkspaceAgentResponse(url, response);
                 if (rewritten && !rewritten.blocked) {
                     observeRewriteResponse(response, rewritten.diagnostic).catch(error => {
-                        updateRewriteFailure(rewritten.diagnostic, error?.message || String(error));
+                        const isAbortError = error?.name === 'AbortError' || /abort/i.test(String(error?.message || ''));
+                        if (!isAbortError) updateRewriteFailure(rewritten.diagnostic, error?.message || String(error));
                         log('Rewrite response observer failed', error);
                     });
                 } else {
@@ -3681,6 +4661,10 @@
     function setPanelView(view = 'main', focus = true) {
         const panel = q('mi-p');
         if (!panel) return;
+        if (typeof privacySelectState !== 'undefined') {
+            setPrivacySelectOpen?.('tz', false);
+            setPrivacySelectOpen?.('lang', false);
+        }
         const nextView = view === 'settings' ? 'settings' : 'main';
         const previousView = panel.dataset.view === 'settings' ? 'settings' : 'main';
         const mainView = q('mi-main-view');
@@ -4425,6 +5409,11 @@
         const roots = [view];
         if (q('mi-drop')?.classList.contains('show')) roots.push(q('mi-drop'));
         if (q('mi-lang-menu')?.classList.contains('show')) roots.push(q('mi-lang-menu'));
+        for (const kind of ['tz', 'lang']) {
+            if (privacySelectState?.[kind]?.open && q(`mi-privacy-${kind}-menu`)) {
+                roots.push(q(`mi-privacy-${kind}-menu`));
+            }
+        }
         return roots.flatMap(root => [...root.querySelectorAll('button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])')])
             .filter(element => {
                 if (element.closest('[inert], [aria-hidden=true]')) return false;
@@ -4623,7 +5612,7 @@
         const label = t(`effort_${requested}`);
         if (!enabled) return t('effort_disabled');
         if (!injectionDiagnostic.effortApplied) return `${t('effort_not_applied')} / ${label}`;
-        return `${injectionDiagnostic.thinkingEffort || mapEffort(requested)} / ${label}`;
+        return `${injectionDiagnostic.thinkingEffort || mapEffort(requested, S.model)} / ${label}`;
     }
 
     function getDiagnosticRouteText() {
@@ -4902,8 +5891,13 @@
         if (q('mi-lang-label')) q('mi-lang-label').textContent = t('language');
         const debugLabel = q('mi-debug-label');
         if (debugLabel) debugLabel.textContent = t('debug_mode');
+        if (q('mi-privacy-spoof')) q('mi-privacy-spoof').textContent = t('privacy_spoof');
+        if (q('mi-privacy-subtitle')) q('mi-privacy-subtitle').textContent = t('privacy_subtitle');
+        if (q('mi-privacy-tz-label')) q('mi-privacy-tz-label').textContent = t('privacy_timezone');
+        if (q('mi-privacy-lang-label')) q('mi-privacy-lang-label').textContent = t('privacy_language');
         if (q('mi-privacy-title')) q('mi-privacy-title').textContent = t('privacy_title');
         if (q('mi-privacy-body')) q('mi-privacy-body').textContent = t('privacy_body');
+        renderPrivacySettings();
         if (q('mi-clear-diagnostics')) q('mi-clear-diagnostics').textContent = t('diagnostic_clear');
         if (q('mi-export-packets')) q('mi-export-packets').textContent = t('diagnostic_export');
         renderLanguageOptions();
@@ -4948,7 +5942,14 @@
             if (label) label.textContent = t(`effort_${effort}`);
         });
         const detail = container.querySelector('.mi-effort-detail');
-        if (detail) detail.textContent = t(`effort_${S.effort}_sub`);
+        if (detail) {
+            const parts = [t(`effort_${S.effort}_sub`)];
+            if (S.debug) {
+                const wire = mapEffort(S.effort, S.model);
+                if (wire) parts.push(wire);
+            }
+            detail.textContent = parts.join(' · ');
+        }
     }
 
     function renderRecent() {
@@ -5465,7 +6466,7 @@
 
     function syncControlState() {
         q('mi-b')?.classList.toggle('off', !S.on);
-        for (const [id, enabled] of [['mi-sw-main', S.on], ['mi-sw-effort', S.effortOn], ['mi-sw-debug', S.debug]]) {
+        for (const [id, enabled] of [['mi-sw-main', S.on], ['mi-sw-effort', S.effortOn], ['mi-sw-debug', S.debug], ['mi-sw-privacy', S.privacyOn]]) {
             const control = q(id);
             control?.classList.toggle('on', Boolean(enabled));
             control?.setAttribute('aria-checked', enabled ? 'true' : 'false');
@@ -5572,6 +6573,9 @@
     function syncStateFromStorage() {
         const previousModel = S.model;
         const previousDebug = S.debug;
+        const previousPrivacyOn = S.privacyOn;
+        const previousPrivacyTzMode = S.privacyTzMode;
+        const previousPrivacyLangMode = S.privacyLangMode;
         S.on = readMainToggle();
         S.model = readString('m', '');
         if (S.model === 'auto') S.model = '';
@@ -5580,6 +6584,9 @@
         if (!EFFORTS.includes(S.effort)) S.effort = 'standard';
         S.effortOn = readFlag('eo', false);
         S.debug = readFlag('d', false);
+        S.privacyOn = readFlag('pv', false);
+        S.privacyTzMode = readString('pvtz', 'auto');
+        S.privacyLangMode = readString('pvlang', 'auto');
         S.lang = readString('lang', 'zh-CN');
         S.bgColor = readString('bg', '#007aff');
         S.diagOpen = readFlag('diag_open', S.diagOpen);
@@ -5590,6 +6597,14 @@
         S.lastFetch = readString('lf', S.lastFetch || '');
         S.lastAgentFetch = readString('laf', S.lastAgentFetch || '');
         if (previousDebug && !S.debug) clearDiagnosticArtifacts();
+        const privacyChanged = previousPrivacyOn !== S.privacyOn
+            || previousPrivacyTzMode !== S.privacyTzMode
+            || previousPrivacyLangMode !== S.privacyLangMode;
+        if (privacyChanged) {
+            applyPrivacySpoof();
+            if (IS_TOP_FRAME) syncAcceptLanguageRule();
+            if (IS_TOP_FRAME) renderPrivacySettings();
+        }
         applyTheme();
         applyUiText();
         updateUIState();
@@ -5723,11 +6738,94 @@
             updateUIState();
             log('Debug mode', S.debug ? 'on' : 'off');
         };
+        q('mi-sw-privacy')?.addEventListener('click', () => {
+            S.privacyOn = !S.privacyOn;
+            save('pv', S.privacyOn ? '1' : '0');
+            if (S.privacyOn) refreshPrivacyGeo(false);
+            applyPrivacySpoof();
+            syncAcceptLanguageRule();
+            renderPrivacySettings();
+            log('Privacy spoofing', S.privacyOn ? 'on' : 'off');
+        });
+        q('mi-privacy-refresh')?.addEventListener('click', () => refreshPrivacyGeo(true));
+
+        for (const kind of ['tz', 'lang']) {
+            const getOptions = () => [...(q(`mi-privacy-${kind}-menu`)?.querySelectorAll('.mi-lang-option') || [])];
+            const focusOption = edge => {
+                const options = getOptions();
+                if (!options.length) return;
+                const selected = options.find(option => option.classList.contains('active'));
+                const index = edge === 'last'
+                    ? options.length - 1
+                    : edge === 'selected' ? Math.max(0, options.indexOf(selected)) : 0;
+                options[index]?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+                options[index]?.focus({ preventScroll: true });
+            };
+            const openMenu = edge => {
+                setPrivacySelectOpen(kind === 'tz' ? 'lang' : 'tz', false);
+                positionPrivacySelectMenu(kind);
+                setPrivacySelectOpen(kind, true);
+                if (edge === 'first' || edge === 'last' || edge === 'selected') focusOption(edge);
+            };
+            q(`mi-privacy-${kind}-trigger`)?.addEventListener('click', () => {
+                const picker = q(`mi-privacy-${kind}-picker`);
+                const willOpen = !picker?.classList.contains('open');
+                setPrivacySelectOpen('tz', false);
+                setPrivacySelectOpen('lang', false);
+                if (willOpen) openMenu('');
+            });
+            q(`mi-privacy-${kind}-trigger`)?.addEventListener('keydown', event => {
+                if (event.key === 'Escape') {
+                    event.preventDefault();
+                    setPrivacySelectOpen(kind, false);
+                    return;
+                }
+                if (!['ArrowDown', 'ArrowUp', 'Enter', ' '].includes(event.key)) return;
+                event.preventDefault();
+                openMenu(event.key === 'ArrowUp' ? 'last' : 'selected');
+            });
+            q(`mi-privacy-${kind}-menu`)?.addEventListener('click', event => {
+                const option = event.target.closest('.mi-lang-option');
+                if (!option?.dataset.privacyValue) return;
+                selectPrivacyOption(kind, option.dataset.privacyValue);
+            });
+            q(`mi-privacy-${kind}-menu`)?.addEventListener('keydown', event => {
+                const options = getOptions();
+                const option = event.target.closest('.mi-lang-option');
+                const currentIndex = options.indexOf(option);
+                if (event.key === 'Tab') {
+                    event.preventDefault();
+                    setPrivacySelectOpen(kind, false);
+                    schedulePanelFocus(q(`mi-privacy-${kind}-trigger`));
+                    return;
+                }
+                if (event.key === 'Escape') {
+                    event.preventDefault();
+                    setPrivacySelectOpen(kind, false);
+                    schedulePanelFocus(q(`mi-privacy-${kind}-trigger`));
+                    return;
+                }
+                if ((event.key === 'Enter' || event.key === ' ') && option) {
+                    event.preventDefault();
+                    selectPrivacyOption(kind, option.dataset.privacyValue);
+                    return;
+                }
+                let nextIndex = currentIndex;
+                if (event.key === 'ArrowDown') nextIndex = (Math.max(0, currentIndex) + 1) % options.length;
+                else if (event.key === 'ArrowUp') nextIndex = (Math.max(0, currentIndex) - 1 + options.length) % options.length;
+                else if (event.key === 'Home') nextIndex = 0;
+                else if (event.key === 'End') nextIndex = options.length - 1;
+                else return;
+                event.preventDefault();
+                options[nextIndex]?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+                options[nextIndex]?.focus({ preventScroll: true });
+            });
+        }
 
         $('mi-ref-btn').onclick = fetchModels;
         $('mi-calc').onclick = () => {
             animateContextRefresh();
-            recalcTokens();
+            recalcTokens({ cheap: false });
         };
         q('mi-export-packets')?.addEventListener('click', exportPacketLog);
         q('mi-clear-diagnostics')?.addEventListener('click', resetDiagnostics);
@@ -6078,6 +7176,11 @@
             const path = typeof event.composedPath === 'function' ? event.composedPath() : [];
             const isWithin = element => Boolean(element && (path.includes(element) || element.contains(event.target)));
             if (!isWithin(q('mi-lang-picker')) && !isWithin(q('mi-lang-menu'))) setLanguageMenuOpen(false);
+            for (const kind of ['tz', 'lang']) {
+                const picker = q(`mi-privacy-${kind}-picker`);
+                const menu = q(`mi-privacy-${kind}-menu`);
+                if (privacySelectState[kind].open && !isWithin(picker) && !isWithin(menu)) setPrivacySelectOpen(kind, false);
+            }
             if ($('mi-drop').classList.contains('show') && !isWithin($('mi-sel-wrap')) && !isWithin($('mi-drop'))) closeDropdown(true);
             if (mainPanel.classList.contains('show') && !isWithin(root)) {
                 closeDropdown(false);
@@ -6098,6 +7201,13 @@
                 event.preventDefault();
                 setLanguageMenuOpen(false);
                 schedulePanelFocus(q('mi-lang-trigger'));
+                return;
+            }
+            const openPrivacyKind = ['tz', 'lang'].find(kind => privacySelectState[kind].open);
+            if (openPrivacyKind) {
+                event.preventDefault();
+                setPrivacySelectOpen(openPrivacyKind, false);
+                schedulePanelFocus(q(`mi-privacy-${openPrivacyKind}-trigger`));
                 return;
             }
             if ($('mi-drop').classList.contains('show')) {
@@ -6276,6 +7386,9 @@
                 schedulePanelFirstPaintPreparation(panel);
                 if (q('mi-drop')?.classList.contains('show')) positionDropdown();
                 if (q('mi-lang-menu')?.classList.contains('show')) positionLanguageMenu();
+                for (const kind of ['tz', 'lang']) {
+                    if (privacySelectState[kind].open) positionPrivacySelectMenu(kind);
+                }
             }, 100);
         };
         window.addEventListener('resize', onResize);
@@ -7930,6 +9043,76 @@
 .mi-debug-row {
     margin-top: 0;
 }
+.mi-privacy-card {
+    display: grid;
+    gap: 8px;
+    flex: 0 0 auto;
+    margin: 0 0 8px;
+    padding: 10px 12px 12px;
+    border-radius: 16px;
+    background:
+        radial-gradient(circle at 0% 0%, rgba(var(--mi-bg-rgb), 0.1), transparent 55%),
+        rgba(255,255,255,0.02);
+    border: 1px solid rgba(var(--mi-bg-rgb), 0.14);
+}
+.mi-privacy-card > .mi-debug-row {
+    min-height: 40px;
+    margin: 0;
+    padding: 0;
+    border: none;
+    background: transparent;
+}
+.mi-privacy-head {
+    display: grid;
+    gap: 1px;
+    min-width: 0;
+}
+.mi-privacy-head strong {
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: -0.1px;
+    color: var(--mi-text-primary);
+}
+.mi-privacy-head span,
+.mi-privacy-status {
+    color: rgba(235,235,245,0.55);
+    font-size: 11px;
+    line-height: 1.4;
+}
+.mi-privacy-status { padding-left: 2px; }
+.mi-privacy-grid {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    align-items: center;
+    gap: 7px 9px;
+}
+.mi-privacy-field-label {
+    color: rgba(235,235,245,0.62);
+    font-size: 12px;
+    font-weight: 600;
+    white-space: nowrap;
+}
+.mi-privacy-picker {
+    width: 100%;
+    min-width: 0;
+}
+.mi-privacy-trigger {
+    min-height: 38px;
+    padding: 8px 34px 8px 12px;
+    border-radius: 12px;
+    font-size: 12px;
+}
+.mi-privacy-trigger::after {
+    right: 12px;
+    width: 8px;
+    height: 8px;
+}
+.mi-privacy-card .mi-link-btn {
+    justify-self: start;
+    min-height: 28px;
+    padding: 0 9px;
+    font-size: 11px;
+}
 .mi-settings-note {
     display: grid;
     gap: 4px;
@@ -9134,6 +10317,31 @@
         <label id="mi-debug-label">Debug mode (open console for logs)</label>
         <button class="mi-sw mi-sw-compact" id="mi-sw-debug" type="button" role="switch" aria-checked="false"><span class="mi-sr-only">Debug mode</span></button>
     </div>
+    <div class="mi-privacy-card">
+        <div class="mi-row mi-debug-row">
+            <div class="mi-privacy-head">
+                <strong id="mi-privacy-spoof">IP spoofing</strong>
+                <span id="mi-privacy-subtitle">Timezone &amp; language masking</span>
+            </div>
+            <button class="mi-sw mi-sw-compact" id="mi-sw-privacy" type="button" role="switch" aria-checked="false"><span class="mi-sr-only">IP spoofing</span></button>
+        </div>
+        <div class="mi-privacy-status" id="mi-privacy-status">Egress location not detected yet</div>
+        <div class="mi-privacy-grid">
+            <span class="mi-privacy-field-label" id="mi-privacy-tz-label">Timezone</span>
+            <div id="mi-privacy-tz-picker" class="mi-lang-picker mi-privacy-picker">
+                <button id="mi-privacy-tz-trigger" class="mi-lang-trigger mi-privacy-trigger" type="button" aria-haspopup="listbox" aria-controls="mi-privacy-tz-menu" aria-expanded="false">
+                    <span id="mi-privacy-tz-current"></span>
+                </button>
+            </div>
+            <span class="mi-privacy-field-label" id="mi-privacy-lang-label">Main language</span>
+            <div id="mi-privacy-lang-picker" class="mi-lang-picker mi-privacy-picker">
+                <button id="mi-privacy-lang-trigger" class="mi-lang-trigger mi-privacy-trigger" type="button" aria-haspopup="listbox" aria-controls="mi-privacy-lang-menu" aria-expanded="false">
+                    <span id="mi-privacy-lang-current"></span>
+                </button>
+            </div>
+        </div>
+        <button class="mi-link-btn" id="mi-privacy-refresh" type="button">Redetect</button>
+    </div>
     <div class="mi-settings-note">
         <strong id="mi-privacy-title">Privacy by default</strong>
         <span id="mi-privacy-body">Packet diagnostics stay in memory and are erased when debug mode is turned off.</span>
@@ -9143,6 +10351,8 @@
     </div>
     </div>
     <div id="mi-lang-menu" class="mi-lang-menu" role="listbox" aria-hidden="true" inert></div>
+    <div id="mi-privacy-tz-menu" class="mi-lang-menu" role="listbox" aria-hidden="true" inert></div>
+    <div id="mi-privacy-lang-menu" class="mi-lang-menu" role="listbox" aria-hidden="true" inert></div>
     <div id="mi-drop" aria-hidden="true" tabindex="-1"></div>
 </div>
         `;
@@ -9196,12 +10406,14 @@
 
     if (isSupportedHost()) {
         installStorageSync();
-        installFetchHook();
+        if (IS_TOP_FRAME) installFetchHook();
     }
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', () => waitForBody(createUI), { once: true });
-    } else {
-        waitForBody(createUI);
+    if (IS_TOP_FRAME) {
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', () => waitForBody(createUI), { once: true });
+        } else {
+            waitForBody(createUI);
+        }
     }
 
 })();
