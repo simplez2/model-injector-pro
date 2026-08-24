@@ -5,12 +5,16 @@
 
     const PREFIX = 'cgpt_v12_';
     const IS_TOP_FRAME = window.top === window;
-    const SCRIPT_BUILD = '2026-08-16-long-thread-perf-v21';
+    const SCRIPT_BUILD = '2026-08-24-pow-route-dedup-v22';
     const PROJECT_REPOSITORY_URL = 'https://github.com/simplez2/model-injector-pro';
     const PACKET_LOG_LIMIT = 48;
     const MODELS_ENDPOINT = '/backend-api/models';
     const CES_STATS_ENDPOINT = '/ces/statsc/flush';
     const SENTINEL_FINALIZE_ENDPOINT = '/backend-api/sentinel/chat-requirements/finalize';
+    const SENTINEL_REQUIREMENTS_PATH_RE = /^\/backend-api\/sentinel\/chat-requirements(?:\/|$)/i;
+    // Presence-only diagnostics. Never store or print the PoW/proof value itself.
+    const POW_FIELD_RE = /^(?:pow|pow_token|powToken|proof|proof_token|proofToken|proof_of_work|proofOfWork|work_factor|workFactor|nonce|challenge|challenge_token|challengeToken)$/i;
+    const POW_HEADER_RE = /(?:^|[-_])(pow|proof|challenge|nonce)(?:$|[-_])/i;
     const WORKSPACE_AGENT_PREFIX = 'workspace-agent:';
     const HERMES_AGENT_PATH_RE = /\/backend-api\/hermes\/agent\/(agt_[a-z0-9_:-]+)(?:\/|$)/i;
     const AGENT_PAGE_PATH_RE = /\/agents\/a\/(agt_[a-z0-9_:-]+)/i;
@@ -244,6 +248,7 @@
     let refs = {};
     let modelsRequestSnapshot = null;
     let lastSentinelFinalize = null;
+    let lastPowDetection = null;
     let observer = null;
     let contextTimer = 0;
     let contextIdleJob = 0;
@@ -310,7 +315,8 @@
         error: '',
         skipReason: '',
         packetRequest: null,
-        packetResponse: null
+        packetResponse: null,
+        pow: null
     };
 
     function cleanupStaleUi() {
@@ -423,6 +429,10 @@
             diagnostic_last: '上次改写',
             diagnostic_effort: '思考深度',
             diagnostic_response_model: '响应模型',
+            diagnostic_pow: 'PoW 检测',
+            pow_not_seen: '尚未发现',
+            pow_present: '已发现字段',
+            pow_absent: '未发现字段',
             diagnostic_workspace_agent: 'Workspace Agent',
             diagnostic_error: '失败原因',
             diagnostic_none: '无',
@@ -537,6 +547,10 @@
             diagnostic_last: 'Last rewrite',
             diagnostic_effort: 'Thinking effort',
             diagnostic_response_model: 'Response model',
+            diagnostic_pow: 'PoW detection',
+            pow_not_seen: 'Not observed',
+            pow_present: 'Field present',
+            pow_absent: 'No field',
             diagnostic_workspace_agent: 'Workspace Agent',
             diagnostic_error: 'Failure reason',
             diagnostic_none: 'None',
@@ -651,6 +665,10 @@
             diagnostic_last: '前回の書き換え',
             diagnostic_effort: '思考深度',
             diagnostic_response_model: '応答モデル',
+            diagnostic_pow: 'PoW 検出',
+            pow_not_seen: '未観測',
+            pow_present: 'フィールドあり',
+            pow_absent: 'フィールドなし',
             diagnostic_workspace_agent: 'Workspace Agent',
             diagnostic_error: '失敗理由',
             diagnostic_none: 'なし',
@@ -765,6 +783,10 @@
             diagnostic_last: 'Последняя подмена',
             diagnostic_effort: 'Глубина мышления',
             diagnostic_response_model: 'Модель ответа',
+            diagnostic_pow: 'Проверка PoW',
+            pow_not_seen: 'Не наблюдалось',
+            pow_present: 'Поле найдено',
+            pow_absent: 'Поле не найдено',
             diagnostic_workspace_agent: 'Workspace Agent',
             diagnostic_error: 'Причина ошибки',
             diagnostic_none: 'Нет',
@@ -814,6 +836,7 @@
     }
     function clearDiagnosticArtifacts() {
         writePacketLog([]);
+        lastPowDetection = null;
         document.documentElement.removeAttribute('data-mi-packet-log-size');
         document.documentElement.removeAttribute('data-mi-diagnostic');
     }
@@ -1848,7 +1871,9 @@
     function getDisplayName(id) {
         if (!id) return t('default_model');
         if (isWorkspaceAgentSelection(id)) return getWorkspaceAgent(getWorkspaceAgentId(id))?.name || getWorkspaceAgentId(id) || id;
-        return getApiEntry(id)?.name || PRESET_MAP.get(id)?.name || id;
+        const entry = getApiEntry(id);
+        const base = getBaseModelPresentation(id, entry?.name || PRESET_MAP.get(id)?.name || id, entry);
+        return buildModelPresentations(collectMenuModelItems()).get(id)?.title || base.title;
     }
     function isSupportedHost() { return /(^|\.)(chatgpt\.com|chat\.openai\.com)$/i.test(location.hostname); }
     function isThinkingModel(id, entry) {
@@ -2765,6 +2790,11 @@
         return getSameOriginUrl(value)?.pathname === pathname;
     }
 
+    function isSentinelRequirementsUrl(value) {
+        const pathname = getSameOriginUrl(value)?.pathname || '';
+        return SENTINEL_REQUIREMENTS_PATH_RE.test(pathname);
+    }
+
     function mergeHeaders(...sources) {
         const headers = new Headers();
         for (const source of sources.filter(Boolean)) {
@@ -3172,23 +3202,123 @@
         }
     }
 
+    function summarizePowValue(value) {
+        if (value === undefined) return { present: false, empty: true, type: 'undefined', length: 0 };
+        if (value === null) return { present: false, empty: true, type: 'null', length: 0 };
+        if (typeof value === 'string') {
+            return { present: value.length > 0, empty: value.length === 0, type: 'string', length: value.length };
+        }
+        if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') {
+            return { present: true, empty: false, type: typeof value, length: String(value).length };
+        }
+        if (Array.isArray(value)) return { present: value.length > 0, empty: value.length === 0, type: 'array', length: value.length };
+        return { present: true, empty: false, type: 'object', length: Object.keys(value).length };
+    }
+
+    function collectPowFields(value, path = '', out = [], depth = 0) {
+        if (out.length >= 32 || depth > 7 || value == null || typeof value !== 'object') return out;
+        if (Array.isArray(value)) {
+            value.slice(0, 24).forEach((item, index) => collectPowFields(item, `${path}[${index}]`, out, depth + 1));
+            return out;
+        }
+        for (const [rawKey, nested] of Object.entries(value)) {
+            if (out.length >= 32) break;
+            const key = String(rawKey || '').slice(0, 80);
+            const childPath = path ? `${path}.${key}` : key;
+            if (POW_FIELD_RE.test(key)) {
+                const summary = summarizePowValue(nested);
+                out.push({ path: childPath.slice(0, 180), key, ...summary });
+            }
+            if (nested && typeof nested === 'object') collectPowFields(nested, childPath, out, depth + 1);
+        }
+        return out;
+    }
+
+    function collectPowFieldsFromSample(sample) {
+        const frames = collectResponseJsonFrames(sample);
+        const fields = [];
+        frames.forEach(frame => collectPowFields(frame, '', fields));
+        const seen = new Set();
+        return fields.filter(field => {
+            const key = `${field.path}:${field.type}:${field.length}`;
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+        }).slice(0, 32);
+    }
+
+    function collectPowHeaderFields(headers) {
+        const fields = [];
+        try {
+            new Headers(headers || {}).forEach((value, key) => {
+                if (!POW_HEADER_RE.test(key)) return;
+                const text = String(value || '');
+                fields.push({ key, type: 'header', present: Boolean(text), empty: !text, length: text.length });
+            });
+        } catch {}
+        return fields.slice(0, 16);
+    }
+
+    function buildPowChannelSummary(bodyFields, headerFields) {
+        const fields = [...bodyFields, ...headerFields];
+        return {
+            present: fields.some(field => field.present),
+            fieldCount: fields.length,
+            fields
+        };
+    }
+
     async function captureSentinelFinalize(input, init, url, response) {
-        if (!isExactEndpointUrl(url, SENTINEL_FINALIZE_ENDPOINT)) return;
+        if (!isSentinelRequirementsUrl(url)) return;
         const bodyText = await getRequestBodyText(input, init);
         const payload = parseJsonMaybe(bodyText);
-        const headerValue = response?.headers?.get?.('x-oai-is-update') || '';
+        const requestBodyFields = collectPowFields(payload || parseJsonMaybe(bodyText));
+        const requestHeaders = mergeHeaders(input instanceof Request ? input.headers : null, init?.headers);
+        const requestHeaderFields = collectPowHeaderFields(requestHeaders);
+        let responseSample = '';
+        try {
+            responseSample = await readResponseSample(response, 8000);
+        } catch (error) {
+            log('Failed to read Sentinel response sample', error);
+        }
+        const responseBodyFields = collectPowFieldsFromSample(responseSample);
+        const responseHeaderFields = collectPowHeaderFields(response?.headers);
+        const request = buildPowChannelSummary(requestBodyFields, requestHeaderFields);
+        const responseSummary = buildPowChannelSummary(responseBodyFields, responseHeaderFields);
+        const parsedUrl = getSameOriginUrl(url);
+        const endpoint = parsedUrl?.pathname || '';
         const record = {
-            endpoint: SENTINEL_FINALIZE_ENDPOINT,
+            endpoint,
             status: response?.status || 0,
             ok: Boolean(response?.ok),
-            hasOaiIsUpdate: Boolean(headerValue),
-            oaiIsUpdateLength: headerValue.length || 0,
-            requestKeys: payload && typeof payload === 'object' ? Object.keys(payload).slice(0, 40) : [],
+            contentType: response?.headers?.get?.('content-type') || '',
+            present: Boolean(request.present || responseSummary.present),
+            request,
+            response: responseSummary,
             at: Date.now()
         };
-        lastSentinelFinalize = record;
-        appendPacketLog('sentinel-finalize', null, record);
-        log('Sentinel finalize captured', record);
+        lastPowDetection = record;
+        injectionDiagnostic = { ...injectionDiagnostic, pow: record };
+        if (isExactEndpointUrl(url, SENTINEL_FINALIZE_ENDPOINT)) {
+            const headerValue = response?.headers?.get?.('x-oai-is-update') || '';
+            lastSentinelFinalize = {
+                endpoint: SENTINEL_FINALIZE_ENDPOINT,
+                status: response?.status || 0,
+                ok: Boolean(response?.ok),
+                hasOaiIsUpdate: Boolean(headerValue),
+                oaiIsUpdateLength: headerValue.length || 0,
+                requestKeys: payload && typeof payload === 'object' ? Object.keys(payload).slice(0, 40) : [],
+                powPresent: record.present,
+                at: record.at
+            };
+        }
+        appendPacketLog('sentinel-requirements', null, record);
+        updateDiagnostics();
+        log('Sentinel PoW presence captured', {
+            endpoint,
+            request: { present: request.present, fieldCount: request.fieldCount },
+            response: { present: responseSummary.present, fieldCount: responseSummary.fieldCount }
+        });
     }
 
     function getSentinelFinalizeSummary() {
@@ -3197,6 +3327,7 @@
             status: lastSentinelFinalize.status || 0,
             ok: Boolean(lastSentinelFinalize.ok),
             hasOaiIsUpdate: Boolean(lastSentinelFinalize.hasOaiIsUpdate),
+            powPresent: Boolean(lastSentinelFinalize.powPresent),
             ageMs: Math.max(0, Date.now() - lastSentinelFinalize.at)
         };
     }
@@ -3210,7 +3341,7 @@
                 page: sanitizeUrlForLog(location.href),
                 selected: S.model || '',
                 enabled: Boolean(S.on),
-                currentDiagnostic: sanitizeLogValue(injectionDiagnostic),
+                currentDiagnostic: sanitizeLogValue({ ...injectionDiagnostic, pow: lastPowDetection }),
                 entries: readPacketLog()
             };
             const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
@@ -3726,6 +3857,8 @@
         injectionDiagnostic = {
             ...injectionDiagnostic,
             packetResponse: {
+                ...(injectionDiagnostic.packetResponse || {}),
+                kind: 'agent',
                 agentId: evidence.marker.id,
                 agentName: evidence.marker.name,
                 status: evidence.status,
@@ -3845,6 +3978,51 @@
         return sample.slice(0, limit);
     }
 
+    function normalizeComparableModel(value) {
+        return String(value || '').trim().toLowerCase();
+    }
+
+    function hasModelMismatch() {
+        if (!injectionDiagnostic.at || isWorkspaceAgentSelection(injectionDiagnostic.selected || S.model)) return false;
+        const requested = normalizeComparableModel(injectionDiagnostic.lastModel || injectionDiagnostic.selected || S.model);
+        const response = normalizeComparableModel(injectionDiagnostic.responseModel);
+        return Boolean(requested && response && requested !== response);
+    }
+
+    function collectResponseModelCandidates(sample) {
+        const candidates = collectModelFields(parseJsonMaybe(sample));
+        const text = String(sample || '');
+        text.split(/\r?\n/).forEach(line => {
+            const trimmed = line.trim();
+            if (/^data:/i.test(trimmed)) collectModelFields(parseJsonMaybe(trimmed.replace(/^data:\s*/i, '')), candidates);
+            else if (/^[{[]/.test(trimmed)) collectModelFields(parseJsonMaybe(trimmed), candidates);
+        });
+        return [...candidates].slice(0, 32);
+    }
+
+    function updateResponsePacket(diagnostic, responseModel, source, sample = '', status = 0) {
+        if (diagnostic?.at && injectionDiagnostic.at && diagnostic.at !== injectionDiagnostic.at) return;
+        const requestedModel = diagnostic?.lastModel || injectionDiagnostic.lastModel || S.model || '';
+        const response = responseModel || '';
+        const mismatch = Boolean(requestedModel && response && normalizeComparableModel(requestedModel) !== normalizeComparableModel(response));
+        injectionDiagnostic = {
+            ...injectionDiagnostic,
+            ...(diagnostic || {}),
+            packetResponse: {
+                ...(injectionDiagnostic.packetResponse || {}),
+                kind: 'model',
+                requestedModel,
+                responseModel: response,
+                modelFields: collectResponseModelCandidates(sample),
+                source: source || 'response',
+                status: Number(status || 0),
+                mismatch,
+                at: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+            }
+        };
+        updateDiagnostics();
+    }
+
     function updateRewriteFailure(diagnostic, errorText) {
         if (diagnostic?.at && injectionDiagnostic.at && diagnostic.at !== injectionDiagnostic.at) return;
         injectionDiagnostic = {
@@ -3852,6 +4030,8 @@
             ...(diagnostic || {}),
             responseModel: injectionDiagnostic.responseModel || diagnostic?.responseModel || '',
             routeStatus: injectionDiagnostic.routeStatus || diagnostic?.routeStatus || 'unknown',
+            packetResponse: injectionDiagnostic.packetResponse || diagnostic?.packetResponse || null,
+            pow: lastPowDetection || diagnostic?.pow || null,
             error: errorText || ''
         };
         updateDiagnostics();
@@ -3865,14 +4045,18 @@
             ...injectionDiagnostic,
             ...(diagnostic || {}),
             responseModel: exposed,
-            routeStatus: exposed ? (requested && exposed !== requested ? 'routed' : 'same') : 'hidden',
+            routeStatus: exposed ? (requested && normalizeComparableModel(exposed) !== normalizeComparableModel(requested) ? 'routed' : 'same') : 'hidden',
+            packetResponse: injectionDiagnostic.packetResponse || diagnostic?.packetResponse || null,
+            pow: lastPowDetection || diagnostic?.pow || null,
             error: injectionDiagnostic.error || ''
         };
         updateDiagnostics();
+        updateBadge();
         log('Rewrite route observed', {
             requestedModel: requested || null,
             responseModel: exposed || null,
-            routeStatus: injectionDiagnostic.routeStatus
+            routeStatus: injectionDiagnostic.routeStatus,
+            mismatch: hasModelMismatch()
         });
     }
 
@@ -3892,7 +4076,9 @@
             } catch (error) {
                 log('Failed to read failed rewrite response', error);
             }
-            updateRewriteRoute(diagnostic, extractResponseModel(sample, diagnostic?.lastModel || ''));
+            const responseModel = extractResponseModel(sample, diagnostic?.lastModel || '');
+            updateResponsePacket(diagnostic, responseModel, 'fetch-error', sample, response.status);
+            updateRewriteRoute(diagnostic, responseModel);
             const failure = formatHttpFailure(response, sample);
             updateRewriteFailure(diagnostic, failure);
             log('Rewrite response failed', { status: response.status, statusText: response.statusText, failure });
@@ -3903,6 +4089,7 @@
         if (/text\/event-stream|application\/x-ndjson/i.test(contentType)) {
             readResponseSample(response, 12000).then(sample => {
                 const responseModel = extractResponseModel(sample, diagnostic?.lastModel || '');
+                updateResponsePacket(diagnostic, responseModel, 'fetch-stream', sample, response.status);
                 updateRewriteRoute(diagnostic, responseModel);
                 observeWorkspaceAgentStreamSample(sample, { ...diagnostic, responseModel });
                 const streamFailure = extractResponseError(sample, true);
@@ -3911,10 +4098,12 @@
         } else if (/json/i.test(contentType)) {
             readResponseSample(response, 4000).then(sample => {
                 const responseModel = extractResponseModel(sample, diagnostic?.lastModel || '');
+                updateResponsePacket(diagnostic, responseModel, 'fetch-json', sample, response.status);
                 updateRewriteRoute(diagnostic, responseModel);
                 observeWorkspaceAgentStreamSample(sample, { ...diagnostic, responseModel });
             }).catch(error => log('JSON response observer failed', error));
         } else {
+            updateResponsePacket(diagnostic, '', 'fetch-opaque', '', response.status);
             updateRewriteRoute(diagnostic, '');
         }
     }
@@ -4022,7 +4211,7 @@
                 captureConversationRequestPacket(input, init, url, 'before-rewrite').catch(error => log('Conversation request capture failed', error));
 
                 isModelsRequest = isExactEndpointUrl(url, MODELS_ENDPOINT);
-                isSentinelRequest = isExactEndpointUrl(url, SENTINEL_FINALIZE_ENDPOINT);
+                isSentinelRequest = isSentinelRequirementsUrl(url);
                 if (isModelsRequest) {
                     captureModelsRequest(input, init, url);
                 } else if (!isSentinelRequest) {
@@ -4056,7 +4245,7 @@
                     response.clone().json().then(data => ingestApiModels(data, { fromHook: true })).catch(() => {});
                 }
                 if (isSentinelRequest) {
-                    captureSentinelFinalize(input, init, url, response).catch(error => log('Sentinel finalize capture failed', error));
+                    captureSentinelFinalize(input, init, url, response).catch(error => log('Sentinel requirements capture failed', error));
                 }
                 observeWorkspaceAgentResponse(url, response);
                 if (rewritten && !rewritten.blocked) {
@@ -4092,6 +4281,26 @@
             wrappedXHRSend = function (body) {
                 let sendBody = body;
                 let rewritten = null;
+                const isSentinelRequest = isSentinelRequirementsUrl(this.__miRequestUrl);
+                if (isSentinelRequest) {
+                    this.addEventListener('loadend', () => {
+                        try {
+                            const status = Number(this.status || 0);
+                            const responseText = typeof this.responseText === 'string' ? this.responseText.slice(0, 8000) : '';
+                            const responseHeaders = new Headers();
+                            const contentType = this.getResponseHeader?.('content-type');
+                            if (contentType) responseHeaders.set('content-type', contentType);
+                            const responseStatus = status >= 200 && status <= 599 ? status : 200;
+                            const syntheticResponse = new Response(responseText, {
+                                status: responseStatus,
+                                headers: responseHeaders
+                            });
+                            captureSentinelFinalize(null, { body: sendBody }, this.__miRequestUrl, syntheticResponse).catch(error => log('Sentinel XHR capture failed', error));
+                        } catch (error) {
+                            log('Sentinel XHR response observer failed', error);
+                        }
+                    }, { once: true });
+                }
                 try {
                     rewritten = rewriteConversationXhrBody(body, this.__miRequestUrl, this.__miRequestMethod);
                     if (rewritten?.body) sendBody = rewritten.body;
@@ -4113,7 +4322,8 @@
                                 updateRewriteFailure(rewritten.diagnostic, '');
                             }
                             const responseModel = extractResponseModel(sample, rewritten.diagnostic?.lastModel || '');
-                            if (responseModel) updateRewriteRoute(rewritten.diagnostic, responseModel);
+                            updateResponsePacket(rewritten.diagnostic, responseModel, 'xhr', sample, status);
+                            updateRewriteRoute(rewritten.diagnostic, responseModel);
                             observeWorkspaceAgentStreamSample(sample, { ...rewritten.diagnostic, responseModel });
                             appendPacketLog('xhr-response', rewritten.diagnostic.packetRequest || null, {
                                 status,
@@ -5637,7 +5847,10 @@
                 none: '\u672a\u6355\u83b7',
                 noHint: '\u65e0 hint',
                 agentConfirmed: 'Agent \u5df2\u786e\u8ba4',
-                hintOnly: '\u4ec5 hint'
+                hintOnly: '\u4ec5 hint',
+                modelMismatch: '\u6a21\u578b\u4e0d\u4e00\u81f4',
+                modelSame: '\u6a21\u578b\u4e00\u81f4',
+                noModel: '\u672a\u53d1\u73b0\u6a21\u578b\u5b57\u6bb5'
             },
             en: {
                 request: 'Request packet',
@@ -5645,7 +5858,10 @@
                 none: 'Not captured',
                 noHint: 'No hint',
                 agentConfirmed: 'Agent confirmed',
-                hintOnly: 'Hint only'
+                hintOnly: 'Hint only',
+                modelMismatch: 'Model mismatch',
+                modelSame: 'Model matched',
+                noModel: 'No model field'
             },
             ja: {
                 request: 'Request packet',
@@ -5653,7 +5869,10 @@
                 none: 'Not captured',
                 noHint: 'No hint',
                 agentConfirmed: 'Agent confirmed',
-                hintOnly: 'Hint only'
+                hintOnly: 'Hint only',
+                modelMismatch: 'Model mismatch',
+                modelSame: 'Model matched',
+                noModel: 'No model field'
             },
             ru: {
                 request: 'Request packet',
@@ -5661,10 +5880,22 @@
                 none: 'Not captured',
                 noHint: 'No hint',
                 agentConfirmed: 'Agent confirmed',
-                hintOnly: 'Hint only'
+                hintOnly: 'Hint only',
+                modelMismatch: 'Model mismatch',
+                modelSame: 'Model matched',
+                noModel: 'No model field'
             }
         };
         return dict[S.lang]?.[key] || dict.en[key] || key;
+    }
+
+    function getDiagnosticPowText() {
+        const record = lastPowDetection;
+        if (!record) return t('pow_not_seen');
+        const requestCount = Number(record.request?.fieldCount || 0);
+        const responseCount = Number(record.response?.fieldCount || 0);
+        const status = record.present ? t('pow_present') : t('pow_absent');
+        return `${status} / req=${requestCount} / res=${responseCount}`;
     }
 
     function summarizePacketRequest() {
@@ -5686,8 +5917,20 @@
     function summarizePacketResponse() {
         const packet = injectionDiagnostic.packetResponse;
         if (!packet) return getPacketUiText('none');
-        const status = packet.status === 'confirmed' ? getPacketUiText('agentConfirmed') : getPacketUiText('hintOnly');
-        return `${packet.agentName || packet.agentId || '-'} | ${status} | ${packet.source || '-'}`;
+        const model = packet.responseModel || '';
+        const modelStatus = packet.mismatch
+            ? getPacketUiText('modelMismatch')
+            : model
+            ? getPacketUiText('modelSame')
+            : getPacketUiText('noModel');
+        const agent = packet.agentName || packet.agentId || '';
+        const agentStatus = packet.status === 'confirmed'
+            ? getPacketUiText('agentConfirmed')
+            : packet.status === 'hinted'
+            ? getPacketUiText('hintOnly')
+            : '';
+        const subject = agent ? `${agent}${model ? ` / ${model}` : ''}` : (model || '-');
+        return `${subject} | ${modelStatus}${agentStatus ? ` / ${agentStatus}` : ''} | ${packet.source || '-'}`;
     }
 
     function getDiagnosticWorkspaceAgentText() {
@@ -5765,6 +6008,7 @@
         const agentKey = q('mi-diag-agent-k');
         const packetReqKey = q('mi-diag-packet-req-k');
         const packetResKey = q('mi-diag-packet-res-k');
+        const powKey = q('mi-diag-pow-k');
         const errorKey = q('mi-diag-error-k');
         const selected = q('mi-diag-selected');
         const last = q('mi-diag-last');
@@ -5773,6 +6017,7 @@
         const agent = q('mi-diag-agent');
         const packetReq = q('mi-diag-packet-req');
         const packetRes = q('mi-diag-packet-res');
+        const pow = q('mi-diag-pow');
         const error = q('mi-diag-error');
         if (!selected || !last || !error) return;
 
@@ -5800,6 +6045,7 @@
         if (agentKey) agentKey.textContent = t('diagnostic_workspace_agent');
         if (packetReqKey) packetReqKey.textContent = getPacketUiText('request');
         if (packetResKey) packetResKey.textContent = getPacketUiText('response');
+        if (powKey) powKey.textContent = t('diagnostic_pow');
         if (errorKey) errorKey.textContent = t('diagnostic_error');
         selected.textContent = S.model || t('default_model');
         selected.title = S.model || t('default_model');
@@ -5842,9 +6088,16 @@
             packetRes.title = injectionDiagnostic.packetResponse ? JSON.stringify(injectionDiagnostic.packetResponse, null, 2) : '';
             packetRes.classList.toggle('is-muted', !injectionDiagnostic.packetResponse);
         }
+        if (pow) {
+            pow.textContent = getDiagnosticPowText();
+            pow.title = lastPowDetection ? JSON.stringify(lastPowDetection, null, 2) : '';
+            pow.classList.toggle('is-muted', !lastPowDetection);
+            pow.classList.toggle('has-error', Boolean(lastPowDetection?.present));
+        }
         error.textContent = injectionDiagnostic.error || t('diagnostic_none');
         error.title = injectionDiagnostic.error || '';
         error.classList.toggle('has-error', Boolean(injectionDiagnostic.error));
+        updateBadge();
     }
 
     function applyUiText() {
@@ -5958,16 +6211,30 @@
         container.innerHTML = S.recent.map(id => `<button type="button" class="mi-chip ${S.model === id ? 'active' : ''}" data-id="${escapeHtml(id)}" title="${escapeHtml(id)}" aria-pressed="${S.model === id}">${escapeHtml(truncate(getDisplayName(id), 18))}</button>`).join('');
     }
 
-    function renderModelOption(id, name, entry) {
-        const badges = [];
-        if (entry?.tokens) badges.push(fmtTok(entry.tokens));
-        if (entry?.workMode) badges.push('WM');
-        if (entry?.deprecated) badges.push('↓');
-        const meta = badges.join(' · ');
-        const isOnlineCatalog = isLiveCatalogModel(id);
-        const onlineState = isOnlineCatalog
-            ? `<span class="mi-source-state" aria-label="${escapeHtml(t('online'))}"><span class="mi-source-dot" aria-hidden="true"></span><span>${escapeHtml(t('online'))}</span></span>`
-            : '';
+    function normalizeModelPresentationKey(value) {
+        return String(value || '')
+            .trim()
+            .toLowerCase()
+            .replace(/[\u2010-\u2015\u2212_./:]+/g, ' ')
+            .replace(/[^\p{L}\p{N}\s]+/gu, ' ')
+            .replace(/\s+/g, ' ');
+    }
+
+    function collectMenuModelItems() {
+        const merged = new Map();
+        PRESETS.forEach(([id, displayName]) => {
+            if (id === 'auto' || isHiddenModelId(id)) return;
+            merged.set(id, { id, name: displayName, entry: getApiEntry(id) });
+        });
+        S.api.forEach(item => {
+            if (item?.id && item.id !== 'auto' && !isHiddenModelId(item.id)) {
+                merged.set(item.id, { id: item.id, name: item.name || item.id, entry: item });
+            }
+        });
+        return [...merged.values()];
+    }
+
+    function getBaseModelPresentation(id, name, entry) {
         const mappedVariant = String(MENU_LABELS[id] || '').trim();
         const catalogVariant = String(entry?.categoryLabel || '').trim();
         const variant = mappedVariant || catalogVariant;
@@ -5981,6 +6248,101 @@
         const modelContext = promoteVariant
             ? (suffixMatches ? fullName.slice(0, -variant.length).trim() : fullName)
             : '';
+        return { title, modelContext, baseKey: normalizeModelPresentationKey(title) };
+    }
+
+    function shortModelId(id) {
+        const value = String(id || '').trim();
+        if (value.length <= 34) return value;
+        return `${value.slice(0, 30)}...`;
+    }
+
+    function getModelDisambiguator(id, entry, base) {
+        const value = String(id || '').trim();
+        const versionMatch = value.match(/^gpt[-.]?(\d+)(?:[-.](\d+))?/i);
+        const major = versionMatch?.[1] || '';
+        const minor = versionMatch?.[2] || '';
+        const versionLabel = major && minor ? `${major}.${minor}` : major;
+        const suffix = versionMatch
+            ? value.slice(versionMatch[0].length).replace(/^[-_.]+/, '')
+            : value;
+        const tokenMap = {
+            cca: 'CCA',
+            fast: 'Fast',
+            instant: 'Instant',
+            luna: 'Luna',
+            mini: 'Mini',
+            pro: 'Pro',
+            reasoning: 'Reasoning',
+            sol: 'Sol',
+            standard: 'Standard',
+            terra: 'Terra',
+            thinking: 'Thinking',
+            t: 'Thinking',
+            work: 'Work',
+            wm: 'Work'
+        };
+        const baseWords = new Set(normalizeModelPresentationKey(base?.title).split(/[^a-z0-9]+/i).filter(Boolean));
+        const labels = [];
+        const addLabel = label => {
+            const normalized = normalizeModelPresentationKey(label);
+            if (!label || !normalized || baseWords.has(normalized) || labels.includes(label)) return;
+            labels.push(label);
+        };
+        suffix.split(/[-_.]+/).filter(Boolean).forEach(token => {
+            const lower = token.toLowerCase();
+            if (/^\d+$/.test(lower) || baseWords.has(lower)) return;
+            addLabel(tokenMap[lower] || (lower.length > 1 ? `${lower[0].toUpperCase()}${lower.slice(1)}` : lower.toUpperCase()));
+        });
+        if (entry?.workMode) addLabel('Work');
+        const versionIsAlreadyVisible = major && minor && baseWords.has(major) && baseWords.has(minor);
+        if (versionLabel && !versionIsAlreadyVisible) addLabel(versionLabel);
+        if (labels.length) return labels.slice(0, 3).join(' / ');
+        return versionLabel ? 'Standard' : shortModelId(value);
+    }
+
+    function buildModelPresentations(items) {
+        const bases = new Map();
+        const counts = new Map();
+        for (const item of items) {
+            const base = getBaseModelPresentation(item.id, item.name, item.entry);
+            bases.set(item.id, base);
+            counts.set(base.baseKey, (counts.get(base.baseKey) || 0) + 1);
+        }
+        const usedTitles = new Set();
+        const presentations = new Map();
+        for (const item of items) {
+            const base = bases.get(item.id);
+            const duplicateBase = (counts.get(base.baseKey) || 0) > 1;
+            const disambiguator = duplicateBase ? getModelDisambiguator(item.id, item.entry, base) : '';
+            let title = duplicateBase ? `${base.title} / ${disambiguator}` : base.title;
+            let attempt = 0;
+            while (usedTitles.has(normalizeModelPresentationKey(title))) {
+                attempt += 1;
+                const suffix = attempt === 1
+                    ? (disambiguator || shortModelId(item.id))
+                    : `${disambiguator || 'model'} / ${shortModelId(item.id)}${attempt > 2 ? ` / ${attempt}` : ''}`;
+                title = `${base.title} / ${suffix}`;
+            }
+            usedTitles.add(normalizeModelPresentationKey(title));
+            presentations.set(item.id, { ...base, title });
+        }
+        return presentations;
+    }
+
+    function renderModelOption(id, name, entry, presentation = null) {
+        const badges = [];
+        if (entry?.tokens) badges.push(fmtTok(entry.tokens));
+        if (entry?.workMode) badges.push('WM');
+        if (entry?.deprecated) badges.push('↓');
+        const meta = badges.join(' · ');
+        const isOnlineCatalog = isLiveCatalogModel(id);
+        const onlineState = isOnlineCatalog
+            ? `<span class="mi-source-state" aria-label="${escapeHtml(t('online'))}"><span class="mi-source-dot" aria-hidden="true"></span><span>${escapeHtml(t('online'))}</span></span>`
+            : '';
+        const modelPresentation = presentation || getBaseModelPresentation(id, name, entry);
+        const title = modelPresentation.title;
+        const modelContext = modelPresentation.modelContext;
         const subParts = [modelContext];
         if (entry?.tagline) subParts.push(entry.tagline);
         else if (entry?.shortExplainer) subParts.push(entry.shortExplainer);
@@ -6041,7 +6403,7 @@
         return t('group_api');
     }
 
-    function renderModelFamilies(items) {
+    function renderModelFamilies(items, modelPresentations = null) {
         const families = new Map();
         items.forEach(item => {
             const family = getModelFamilyLabel(item.id);
@@ -6051,23 +6413,24 @@
         let html = '';
         for (const [family, familyItems] of families) {
             html += `<div class=mi-family><div class=mi-family-head>${escapeHtml(family)}</div>`;
+            const presentations = modelPresentations || buildModelPresentations(familyItems);
             familyItems.sort(compareMenuModelItems).forEach(item => {
-                html += renderModelOption(item.id, item.name, item.entry);
+                html += renderModelOption(item.id, item.name, item.entry, presentations.get(item.id));
             });
             html += `</div>`;
         }
         return html;
     }
 
-    function renderModelMenuSection(title, items, className = '') {
+    function renderModelMenuSection(title, items, className = '', modelPresentations = null) {
         if (!items.length) return '';
         return `<div class='mi-menu-section ${className}'>
             <div class='mi-opt-grp'><span>${escapeHtml(title)}</span><span class='mi-group-count'>${items.length}</span></div>
-            ${renderModelFamilies(items)}
+            ${renderModelFamilies(items, modelPresentations)}
         </div>`;
     }
 
-    function renderOfflineModelSection(items, expanded) {
+    function renderOfflineModelSection(items, expanded, modelPresentations = null) {
         if (!items.length) return '';
         const label = t(expanded ? 'hide_offline_models' : 'show_offline_models');
         return `<div class='mi-menu-section mi-offline-section ${expanded ? 'is-expanded' : ''}'>
@@ -6075,7 +6438,7 @@
                 <span class='mi-offline-toggle-label'><span class='mi-offline-dot' aria-hidden='true'></span>${escapeHtml(t('offline_models'))}</span>
                 <span class='mi-offline-toggle-meta'><span class='mi-group-count'>${items.length}</span><span class='mi-offline-chevron' aria-hidden='true'></span></span>
             </button>
-            ${expanded ? `<div class='mi-offline-body'>${renderModelFamilies(items)}</div>` : ''}
+            ${expanded ? `<div class='mi-offline-body'>${renderModelFamilies(items, modelPresentations)}</div>` : ''}
         </div>`;
     }
 
@@ -6194,17 +6557,8 @@
         let offlineItems = [];
         let offlineExpanded = false;
 
-        const merged = new Map();
-        PRESETS.forEach(([id, displayName]) => {
-            if (id === 'auto') return;
-            if (!isHiddenModelId(id)) merged.set(id, { id, name: displayName, entry: getApiEntry(id) });
-        });
-        S.api.forEach(item => {
-            if (item.id === 'auto') return;
-            if (!isHiddenModelId(item.id)) merged.set(item.id, { id: item.id, name: item.name || item.id, entry: item });
-        });
-
-        const mergedItems = [...merged.values()];
+        const mergedItems = collectMenuModelItems();
+        const modelPresentations = buildModelPresentations(mergedItems);
 
         const agentItems = [...S.agents];
         const selectedAgentId = getWorkspaceAgentId();
@@ -6230,7 +6584,7 @@
 
             if (onlineItems.length) {
                 visibleGroups += 1;
-                html += renderModelMenuSection(t('online_models'), onlineItems, 'mi-live-section');
+                html += renderModelMenuSection(t('online_models'), onlineItems, 'mi-live-section', modelPresentations);
             } else if (!filter.terms.length) {
                 visibleGroups += 1;
                 html += `<div class="mi-menu-section mi-live-section mi-live-empty"><div class="mi-opt-grp"><span>${escapeHtml(t('online_models'))}</span><span class="mi-live-pulse" aria-hidden="true"></span></div><div class="mi-menu-live-note">${escapeHtml(t(modelSyncStatus === 'syncing' ? 'sync_syncing' : 'sync_idle'))}</div></div>`;
@@ -6248,7 +6602,7 @@
 
             if (specialItems.length) {
                 visibleGroups += 1;
-                html += renderModelMenuSection(t('section_special'), specialItems, 'mi-special-section');
+                html += renderModelMenuSection(t('section_special'), specialItems, 'mi-special-section', modelPresentations);
             }
         }
 
@@ -6279,7 +6633,7 @@
 
         if (!filter.agentOnly && offlineItems.length) {
             visibleGroups += 1;
-            html += renderOfflineModelSection(offlineItems, offlineExpanded);
+            html += renderOfflineModelSection(offlineItems, offlineExpanded, modelPresentations);
         }
 
         if (visibleAgents.length && !filter.agentOnly) {
@@ -6421,6 +6775,10 @@
     }
 
     function updateBadge() {
+        const button = q('mi-b');
+        const mismatch = hasModelMismatch();
+        button?.classList.toggle('is-route-mismatch', mismatch);
+        button?.setAttribute('data-route-state', mismatch ? 'mismatch' : (injectionDiagnostic.responseModel ? injectionDiagnostic.routeStatus : 'unknown'));
         const badge = q('mi-n');
         if (!badge) return;
         const prevCount = parseInt(badge.textContent, 10) || 0;
@@ -7673,6 +8031,16 @@
     background: linear-gradient(135deg, rgba(100,100,105,0.9) 0%, rgba(70,70,75,0.9) 100%);
     box-shadow: var(--mi-shadow-sm);
 }
+#mi-b.is-route-mismatch {
+    border-color: rgba(239,68,68,0.74);
+    box-shadow: 0 14px 34px rgba(0,0,0,0.32), 0 0 0 4px rgba(239,68,68,0.12), 0 0 24px rgba(239,68,68,0.28), inset 0 1px 0 rgba(255,255,255,0.16);
+}
+#mi-b.is-route-mismatch::before {
+    border-color: rgba(239,68,68,0.62);
+}
+#mi-b.is-route-mismatch::after {
+    border-color: rgba(255,120,120,0.3);
+}
 #mi-b.dragging {
     transform: scale(1.055);
     box-shadow: 0 22px 48px rgba(0,0,0,0.42), 0 0 0 7px rgba(var(--mi-bg-rgb), 0.12);
@@ -7693,8 +8061,12 @@
 #mi-ring-fg {
     stroke: var(--mi-bg);
     stroke-linecap: round;
-    transition: stroke-dashoffset 0.5s var(--mi-ease), filter 0.3s;
+    transition: stroke 0.3s, stroke-dashoffset 0.5s var(--mi-ease), filter 0.3s;
     filter: drop-shadow(0 0 3px var(--mi-bg));
+}
+#mi-b.is-route-mismatch #mi-ring-fg {
+    stroke: #ef4444;
+    filter: drop-shadow(0 0 4px #ef4444);
 }
 #mi-b .icon {
     width: 34px;
@@ -7705,7 +8077,15 @@
     transform-box: view-box;
     transform-origin: center;
     transform: rotate(0deg) scale(1);
-    transition: transform 0.52s var(--mi-ease-fluid), filter 0.34s var(--mi-ease);
+    transition: transform 0.52s var(--mi-ease-fluid), filter 0.34s var(--mi-ease), color 0.24s var(--mi-ease);
+}
+#mi-b.is-route-mismatch .icon {
+    color: #ff6b6b;
+    filter: drop-shadow(0 3px 6px rgba(0,0,0,0.28)) drop-shadow(0 0 8px rgba(239,68,68,0.62));
+}
+#mi-b.is-route-mismatch .mi-brand-pupil {
+    fill: #ff6b6b;
+    filter: drop-shadow(0 0 6px rgba(239,68,68,0.72));
 }
 #mi-b .mi-brand-orbit-group,
 #mi-b .mi-brand-core {
@@ -10278,6 +10658,8 @@
                     <strong id="mi-diag-packet-req">Not captured</strong>
                     <span id="mi-diag-packet-res-k">Response stream</span>
                     <strong id="mi-diag-packet-res">Not captured</strong>
+                    <span id="mi-diag-pow-k">PoW detection</span>
+                    <strong id="mi-diag-pow">Not observed</strong>
                     <span id="mi-diag-error-k">Failure reason</span>
                     <strong id="mi-diag-error">None</strong>
                 </div>
