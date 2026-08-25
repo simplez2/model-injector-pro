@@ -1,46 +1,86 @@
 # Model Injector Pro
 
-一个面向 Chromium 浏览器的独立 Manifest V3 扩展：在受支持的 ChatGPT 网页会话中提供模型选择、reasoning effort、上下文 token 估算和请求诊断控制。
+**把模型控制、请求诊断和浏览器环境一致性，收进一个本地扩展。**
 
-Model Injector Pro is an independent, open-source browser extension for local model controls and diagnostics on supported ChatGPT web sessions.
+Model Injector Pro 是一款独立、开源、面向 Chromium 浏览器的 Manifest V3 扩展。它为受支持的 ChatGPT 网页会话提供模型选择、reasoning effort、上下文 token 估算、请求改写诊断，以及时区与语言环境的一致性控制。
 
-> **先把浏览器环境对齐，再让页面做判断。** 这不是魔法升级模型，而是尽量不让错误的时区、语言和请求头先把体验“降智”。
+Model Injector Pro is an independent, open-source Manifest V3 extension that brings local model controls, reasoning-effort selection, context estimation, request diagnostics, and browser-environment consistency tools to supported ChatGPT web sessions.
+
+[下载最新版本](https://github.com/simplez2/model-injector-pro/releases/latest) · [安装与使用](docs/USAGE.md) · [隐私边界](docs/PRIVACY.md)
+
+> **先对齐环境，再判断模型。** 它不承诺让模型凭空变聪明，而是尽量避免时区、语言、请求头和页面运行时彼此矛盾，让模型选择是否生效、响应是否被路由、页面为何表现异常，都更容易被看见和验证。
 
 ## 独立性与使用边界
 
-**This project is not affiliated with, endorsed by, or sponsored by OpenAI.** OpenAI、ChatGPT 及相关名称是其各自权利人的商标；本仓库仅为说明兼容目标而作必要引用。项目使用原创图标和视觉语言，不分发 OpenAI 标志或其结形商标图案。
+**This project is not affiliated with, endorsed by, or sponsored by OpenAI.** OpenAI、ChatGPT 及相关名称是其各自权利人的商标；本仓库仅为说明兼容目标而作必要引用。项目使用原创图标和视觉语言，不分发 OpenAI 标志或近似商标图案。
 
-本扩展不会解锁模型、绕过账号权限、规避服务端校验或改变订阅权益。它只能在浏览器本地对页面发起的相关请求进行有限调整；最终可用模型、参数接受情况和响应行为始终由目标网站及账号权限决定。请仅在你有权使用和测试的账号与环境中运行。
+本扩展是浏览器本地控制与诊断工具，不是权限绕过工具。它不会：
 
-## 功能
+- 解锁账号原本不可用的模型或功能；
+- 绕过订阅、配额、地区或服务端权限；
+- 规避服务端校验、风控或安全机制；
+- 保证目标网站接受被修改的模型和推理参数；
+- 隐藏真实 IP，或完整消除浏览器与网络指纹。
 
-- 原创悬浮启动器和可中断的打开、关闭动效。
-- 本地启用或暂停请求参数覆盖。
-- 预设、自定义及页面接口发现的模型选择。
-- 为兼容模型选择 reasoning effort。
+扩展只能在浏览器本地对相关页面状态和请求进行有限处理。最终可用模型、参数接受情况、路由结果和响应行为，始终由目标网站、服务端策略及账号权限决定。请仅在你有权使用和测试的账号与环境中运行。
+
+## 核心能力
+
+### 模型与推理控制
+
+- 集中展示预设模型、自定义模型和页面接口发现的模型。
+- 对同名或近似名称进行消歧，保留实际模型标识，减少误选。
+- 为兼容的推理模型设置 reasoning effort，并显示实际写入的强度。
+- 可随时暂停请求覆盖，不影响页面继续正常使用。
+
+### 请求诊断与可观测性
+
+- 检查 fetch、XHR、SSE、NDJSON 和 JSON 路径中的请求改写与响应模型信息。
+- 区分“已请求的模型”和“响应暴露的模型”；两者不一致时，以红色悬浮状态提醒。
+- 显示 Workspace Agent、system hint、改写状态和失败原因等本地诊断信息。
+- PoW 仅做字段存在性检测，不保存、打印、哈希、导出或展示 proof 内容。
+- 调试模式默认关闭；诊断记录仅保存在当前页面内存中，关闭调试后清除。
+
+### 上下文估算与本地偏好
+
 - 使用随包提供的 `o200k_base` tokenizer 在本地估算上下文占用。
-- 对相关请求改写结果提供本地诊断；调试默认关闭。
-- 使用页面本地存储保存偏好，不依赖项目方后端服务。
-- 中英日俄界面与可配置强调色。
+- 显示消息数、已用 token、剩余 token 和当前上下文上限。
+- 偏好保存在页面本地存储中，不依赖项目方后端或遥测服务。
 
-- 时区与主语言自定义下拉，支持自动匹配出口 IP 的地理信息。
-- 跨页面、iframe、Worker、SharedWorker 的时区/语言一致性处理。
+### 界面与交互
 
-## 防降智：让浏览器别先把自己骗了
+- 原创悬浮启动器，以及可中断、可反向衔接的打开和关闭动效。
+- 支持中文、英文、日文和俄文界面，长文本与窄屏布局经过单独适配。
+- 支持自定义强调色、键盘操作和响应式面板布局。
 
-很多“模型变笨”、“页面显示不对”其实不是模型能力问题，而是浏览器同时暴露了互相矛盾的环境信号：`navigator.language` 说一种语言，默认 `Intl` 却返回另一种；页面时区显示是一个地方，`Date` 本地 getter、`Temporal` 或 `Accept-Language` 又暴露了真实环境。
+### 环境一致性与隐私模式
 
-本项目的隐私模式专门处理这类**环境自相矛盾**：
+- 提供时区与主语言自定义下拉，也可根据出口 IP 地理信息自动匹配。
+- 对齐 `navigator`、`Intl`、`Date` 本地 getter、`Temporal.Now`、`<html lang>` 与 `Accept-Language`。
+- 覆盖顶层页面、匹配的 iframe、`about:blank` iframe、Blob Worker 和 SharedWorker。
+- 关闭后恢复原生行为；反复开关不会叠加 wrapper 或人为制造时间漂移。
 
-- 时区、语言、`Date` 本地时间 getter、日期字符串和默认 `Intl` locale 保持一致。
-- 同步 `navigator` 语言别名、`<html lang>` 与 `Temporal.Now`。
-- 覆盖顶层页面、`about:blank` iframe、Blob Worker 和 SharedWorker。
-- 覆盖文档首次导航以及 Fetch、图片、脚本、Ping 等请求的 `Accept-Language`。
-- 关闭后恢复原生行为，反复开关不会叠加 wrapper 或造成时间漂移。
+## “防降智”到底防的是什么？
 
-**严谨版宣传：**它能减少“环境信号互相打架”导致的错误本地化、时间显示和诊断判断；它不能提升模型智商、解锁账号权限，也不会隐藏真实 IP。浏览器原生 Service Worker、WebRTC、系统字体和网络层指纹仍属于扩展无法完全接管的边界。
+网页看到的“浏览器环境”不是一个字段，而是一组互相关联的信号。常见矛盾包括：
 
-这就是本项目的“防降智”定位：**不是把模型吹成更聪明，而是先避免浏览器把自己伪装得前后矛盾。**
+- `navigator.language` 显示英语，默认 `Intl` 却按另一种语言格式化；
+- 页面宣称位于某个时区，`Date#getHours()` 和 `getTimezoneOffset()` 却来自真实系统时区；
+- `<html lang>`、`Temporal.Now`、Worker 和主页面返回不同地区信息；
+- 页面内语言设置已经改变，请求中的 `Accept-Language` 仍暴露另一套偏好。
+
+这些矛盾通常不会真的降低模型智力，但可能造成错误本地化、日期与时间显示冲突、页面功能分支差异，以及诊断结果难以解释。用户最终感受到的，就是“模型怎么突然不对劲了”或“页面为什么前后说法不一致”。
+
+Model Injector Pro 的隐私模式不是简单修改一个时区字符串，而是尽量让同一页面能够观察到的相关信号保持一致：
+
+- **时间一致：**对齐时区、`Date` 本地时间 getter、时区偏移、日期字符串、默认 `Intl.DateTimeFormat` 和 `Temporal.Now`。
+- **语言一致：**对齐 `navigator.language`、`navigator.languages`、默认 locale、`<html lang>` 与请求侧 `Accept-Language`。
+- **运行上下文一致：**尽量同步主页面、iframe、Blob Worker 和 SharedWorker，减少上下文之间互相“拆台”。
+- **可恢复：**关闭隐私模式后恢复原生对象和行为，避免 wrapper 叠加或时间累计偏移。
+
+> **严谨地说，“防降智”不是模型增强器，而是一层浏览器环境一致性保护。** 它能减少环境信号互相打架带来的错误本地化、时间矛盾和误判；它不能提升模型智商、解锁账号权限、改变服务端路由，也不能隐藏真实 IP。原生 Service Worker、WebRTC、系统字体、图形栈和网络层指纹等，仍属于扩展无法完全接管的边界。
+
+**一句话总结：不替模型吹牛，只让浏览器少撒谎；不保证模型更强，只让异常更容易看清。**
 
 ## 安装
 
