@@ -22,6 +22,15 @@
     const CONVERSATION_SURFACE_SELECTOR = '[data-message-author-role], [data-testid^="conversation-turn-"], article';
     const CHAT_CONVERSATION_PATH_RE = /\/c\/([0-9a-f]{8}-[0-9a-f-]{20,})/i;
     const BACKEND_CONVERSATION_PATH_RE = /\/backend-api\/conversation\/([0-9a-f]{8}-[0-9a-f-]{20,})/i;
+    const CONVERSATION_ID_FIELD_RE = /^(?:id|conversation_id|conversationId|conversation|conversation_uuid|conversationUuid)$/i;
+    const WORKSPACE_AGENT_RECORD_IGNORED_KEY_RE = /prompt|instructions?|system_message/i;
+    const WORKSPACE_AGENT_MARKER_IGNORED_KEY_RE = /prompt|content|text|parts/i;
+    const WORKSPACE_AGENT_SYSTEM_HINT_KEY_RE = /^(?:system_hints|systemHints)$/i;
+    const WORKSPACE_AGENT_CUSTOM_RUN_RE = /custom[_-]?agent[_-]?run/i;
+    const WORKSPACE_AGENT_AUTHOR_STRING_KEY_RE = /^(?:content|parts|text|message|messages)$/i;
+    const STRUCTURED_AGENT_CONTAINER_KEY_RE = /^(?:metadata|client_contextual_info|conversation_mode|conversationMode|system_hints|systemHints|mode|tools?|selected_tools|selectedTools|enabled_tools|enabledTools|features?|workspace|gizmo|assistant)$/i;
+    const STREAM_CONTENT_TYPE_RE = /text\/event-stream|application\/x-ndjson/i;
+    const RESPONSE_CAPTURE_CONTENT_TYPE_RE = /text\/event-stream|application\/x-ndjson|json/i;
     const BUTTON_SIZE = 56;
     const VIEW_MARGIN = 12;
     const PANEL_MAIN_HEIGHT = 680;
@@ -40,6 +49,18 @@
     const COLLATOR = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
     const COLORS = ['#007aff', '#2563eb', '#0ea5e9', '#14b8a6', '#10b981', '#f59e0b', '#f97316', '#ef4444', '#ec4899', '#8b5cf6'];
     const EFFORTS = ['light', 'standard', 'extended', 'heavy'];
+    const EFFORT_ALIASES = {
+        light: ['min', 'none', 'low', 'light'],
+        standard: ['standard', 'medium'],
+        extended: ['extended', 'high'],
+        heavy: ['max', 'xhigh', 'heavy']
+    };
+    const EFFORT_FALLBACKS = {
+        light: 'min',
+        standard: 'standard',
+        extended: 'extended',
+        heavy: 'max'
+    };
     // [slug, displayName, thinking, group]
     // Catalog synced 2026-07-10 from /backend-api/models (title: Latest / GPT-5.5)
     // "latest" version now exposes official gpt-5-6-thinking + gpt-5-6-pro (not work-mode).
@@ -237,6 +258,13 @@
         cnt: 0
     };
     const liveApiModelIds = new Set();
+    let apiEntryCacheSource = null;
+    let apiEntryCache = new Map();
+    const menuModelCache = {
+        source: null,
+        items: [],
+        presentations: new Map()
+    };
     if (S.model === 'auto') S.model = '';
     if (!EFFORTS.includes(S.effort)) S.effort = 'standard';
     if (isHiddenModelId(S.model)) S.model = '';
@@ -920,31 +948,36 @@
         nativeDateTimeFormat: Intl.DateTimeFormat,
         formatterCache: new Map()
     };
+    const PRIVACY_BRIDGE_REQUEST_EVENT = 'mi-geo-request';
+    const PRIVACY_BRIDGE_RESPONSE_EVENT = 'mi-geo-response';
+    const PRIVACY_BRIDGE_TIMEOUT_MS = 15000;
     const privacyBridgePending = new Map();
     let privacyBridgeSeq = 0;
 
-    window.addEventListener('mi-geo-response', event => {
+    window.addEventListener(PRIVACY_BRIDGE_RESPONSE_EVENT, event => {
         const detail = event.detail;
         if (!detail || typeof detail.seq === 'undefined') return;
-        const resolve = privacyBridgePending.get(detail.seq);
-        if (!resolve) return;
+        const pending = privacyBridgePending.get(detail.seq);
+        if (!pending) return;
         privacyBridgePending.delete(detail.seq);
-        resolve(detail);
+        if (pending.timer) window.clearTimeout(pending.timer);
+        pending.resolve(detail);
     });
 
     function requestFromBackground(message) {
         return new Promise(resolve => {
             const seq = ++privacyBridgeSeq;
-            privacyBridgePending.set(seq, resolve);
-            window.dispatchEvent(new CustomEvent('mi-geo-request', {
+            const pending = { resolve, timer: 0 };
+            privacyBridgePending.set(seq, pending);
+            window.dispatchEvent(new CustomEvent(PRIVACY_BRIDGE_REQUEST_EVENT, {
                 detail: { seq, message }
             }));
-            setTimeout(() => {
+            pending.timer = window.setTimeout(() => {
                 if (privacyBridgePending.has(seq)) {
                     privacyBridgePending.delete(seq);
                     resolve({ ok: false, error: 'timeout' });
                 }
-            }, 15000);
+            }, PRIVACY_BRIDGE_TIMEOUT_MS);
         });
     }
 
@@ -1842,7 +1875,16 @@
     }
     function fmtTok(value) { return Number(value) >= 1000 ? `${(Number(value) / 1000).toFixed(1).replace(/\.0$/, '')}k` : String(Math.round(Number(value) || 0)); }
     function sortModelEntries(a, b) { return COLLATOR.compare(a?.name || a?.id || '', b?.name || b?.id || ''); }
-    function getApiEntry(id) { return S.api.find(item => item.id === id) || null; }
+    function getApiEntry(id) {
+        if (apiEntryCacheSource !== S.api) {
+            apiEntryCacheSource = S.api;
+            apiEntryCache = new Map();
+            for (const item of S.api) {
+                if (!apiEntryCache.has(item.id)) apiEntryCache.set(item.id, item);
+            }
+        }
+        return apiEntryCache.get(id) || null;
+    }
     function isLiveCatalogModel(id) { return liveApiModelIds.has(id); }
     function isPersistentSpecialModel(id) { return SPECIAL_MODEL_IDS.has(String(id || '')); }
     function compareMenuModelItems(a, b) {
@@ -1870,10 +1912,13 @@
     function getBackendConversationId(url) { return String(url || '').match(BACKEND_CONVERSATION_PATH_RE)?.[1] || ''; }
     function getDisplayName(id) {
         if (!id) return t('default_model');
-        if (isWorkspaceAgentSelection(id)) return getWorkspaceAgent(getWorkspaceAgentId(id))?.name || getWorkspaceAgentId(id) || id;
+        if (isWorkspaceAgentSelection(id)) {
+            const agentId = getWorkspaceAgentId(id);
+            return getWorkspaceAgent(agentId)?.name || agentId || id;
+        }
         const entry = getApiEntry(id);
         const base = getBaseModelPresentation(id, entry?.name || PRESET_MAP.get(id)?.name || id, entry);
-        return buildModelPresentations(collectMenuModelItems()).get(id)?.title || base.title;
+        return getMenuModelData().presentations.get(id)?.title || base.title;
     }
     function isSupportedHost() { return /(^|\.)(chatgpt\.com|chat\.openai\.com)$/i.test(location.hostname); }
     function isThinkingModel(id, entry) {
@@ -1901,28 +1946,16 @@
     }
     function mapEffort(value, id) {
         const requested = EFFORTS.includes(value) ? value : 'standard';
-        const aliases = {
-            light: ['min', 'none', 'low', 'light'],
-            standard: ['standard', 'medium'],
-            extended: ['extended', 'high'],
-            heavy: ['max', 'xhigh', 'heavy']
-        };
-        const fallback = {
-            light: 'min',
-            standard: 'standard',
-            extended: 'extended',
-            heavy: 'max'
-        };
         const supported = getModelThinkingEfforts(id);
         if (supported.length) {
-            const wanted = aliases[requested] || [requested];
+            const wanted = EFFORT_ALIASES[requested] || [requested];
             const hit = wanted.find(item => supported.includes(item));
             if (hit) return hit;
             // A one-item catalog is usually the default advertisement, not the
             // allowed set. GPT-5.6 Pro often only lists standard; snapping
             // extended/heavy down to that made the old extended gear disappear.
         }
-        return fallback[requested] || 'standard';
+        return EFFORT_FALLBACKS[requested] || 'standard';
     }
     function touchRecent(id) {
         if (!id || isHiddenModelId(id)) return;
@@ -1961,20 +1994,28 @@
         return cleanMessageText(text);
     }
     function collectMessages() {
-        const byRole = Array.from(document.querySelectorAll('[data-message-author-role]'));
+        const byRole = document.querySelectorAll('[data-message-author-role]');
         if (byRole.length) {
-            return byRole.map(node => ({
-                role: node.getAttribute('data-message-author-role') || 'user',
-                content: extractMessageText(node)
-            })).filter(item => item.content);
+            const messages = [];
+            for (let index = 0; index < byRole.length; index += 1) {
+                const node = byRole[index];
+                const role = node.getAttribute('data-message-author-role') || 'user';
+                const content = extractMessageText(node);
+                if (content) messages.push({ role, content });
+            }
+            return messages;
         }
 
-        const articles = Array.from(document.querySelectorAll('main article, article[data-testid*="conversation-turn"], [data-testid^="conversation-turn-"]'));
+        const articles = document.querySelectorAll('main article, article[data-testid*="conversation-turn"], [data-testid^="conversation-turn-"]');
         if (articles.length) {
-            return articles.map((node, index) => ({
-                role: index % 2 === 0 ? 'user' : 'assistant',
-                content: extractMessageText(node)
-            })).filter(item => item.content);
+            const messages = [];
+            for (let index = 0; index < articles.length; index += 1) {
+                const node = articles[index];
+                const role = index % 2 === 0 ? 'user' : 'assistant';
+                const content = extractMessageText(node);
+                if (content) messages.push({ role, content });
+            }
+            return messages;
         }
 
         return [];
@@ -2015,13 +2056,14 @@
         const ring = q('mi-ring-fg');
         if (!ring) return;
         const offset = BUTTON_RING - (pct / 100) * BUTTON_RING;
+        const toneColor = getToneColor(pct);
         ring.setAttribute('stroke-dashoffset', String(offset));
-        ring.style.stroke = getToneColor(pct);
+        ring.style.stroke = toneColor;
 
         const panelRing = q('tok-path');
         if (panelRing) {
             panelRing.setAttribute('stroke-dasharray', `${pct}, 100`);
-            panelRing.style.stroke = getToneColor(pct);
+            panelRing.style.stroke = toneColor;
         }
     }
     function recalcTokens(options = {}) {
@@ -2033,11 +2075,16 @@
 
         lastStats = { msgs, plain, chat, used, limit, pct };
 
-        if (q('val-used')) q('val-used').textContent = formatTokens(used);
-        if (q('val-free')) q('val-free').textContent = formatTokens(remaining);
-        if (q('val-msgs')) q('val-msgs').textContent = String(msgs);
-        if (q('val-lim')) q('val-lim').textContent = formatTokens(limit);
-        if (q('tok-pct')) q('tok-pct').textContent = `${Math.round(pct)}%`;
+        const usedValue = q('val-used');
+        const freeValue = q('val-free');
+        const messageValue = q('val-msgs');
+        const limitValue = q('val-lim');
+        const percentValue = q('tok-pct');
+        if (usedValue) usedValue.textContent = formatTokens(used);
+        if (freeValue) freeValue.textContent = formatTokens(remaining);
+        if (messageValue) messageValue.textContent = String(msgs);
+        if (limitValue) limitValue.textContent = formatTokens(limit);
+        if (percentValue) percentValue.textContent = `${Math.round(pct)}%`;
 
         updateContextRing(pct);
     }
@@ -2097,10 +2144,11 @@
     }
     function mutationTouchesConversation(record, target) {
         if (target?.closest?.(CONVERSATION_SURFACE_SELECTOR)) return true;
-        for (const nodes of [record.addedNodes, record.removedNodes]) {
-            for (const node of nodes) {
-                if (elementMatchesOrContains(node, CONVERSATION_SURFACE_SELECTOR)) return true;
-            }
+        for (const node of record.addedNodes) {
+            if (elementMatchesOrContains(node, CONVERSATION_SURFACE_SELECTOR)) return true;
+        }
+        for (const node of record.removedNodes) {
+            if (elementMatchesOrContains(node, CONVERSATION_SURFACE_SELECTOR)) return true;
         }
         return false;
     }
@@ -2382,11 +2430,15 @@
         }
         if (typeof value !== 'object') return out;
         if (Array.isArray(value)) {
-            value.slice(0, 120).forEach(item => collectConversationIds(item, out, depth + 1));
+            const limit = Math.min(value.length, 120);
+            for (let index = 0; index < limit; index += 1) {
+                if (!(index in value)) continue;
+                collectConversationIds(value[index], out, depth + 1);
+            }
             return out;
         }
         for (const [key, nested] of Object.entries(value)) {
-            if (/^(id|conversation_id|conversationId|conversation|conversation_uuid|conversationUuid)$/i.test(key)) {
+            if (CONVERSATION_ID_FIELD_RE.test(key)) {
                 const id = getConversationIdFromValue(nested);
                 if (id) out.add(id);
             }
@@ -2398,7 +2450,11 @@
     function collectWorkspaceAgentRecords(value, fallbackId = '', out = [], depth = 0) {
         if (!value || typeof value !== 'object') return out;
         if (Array.isArray(value)) {
-            value.slice(0, 80).forEach(item => collectWorkspaceAgentRecords(item, fallbackId, out, depth + 1));
+            const limit = Math.min(value.length, 80);
+            for (let index = 0; index < limit; index += 1) {
+                if (!(index in value)) continue;
+                collectWorkspaceAgentRecords(value[index], fallbackId, out, depth + 1);
+            }
             return out;
         }
 
@@ -2420,7 +2476,7 @@
         }
 
         for (const [key, nested] of Object.entries(value)) {
-            if (/prompt|instructions?|system_message/i.test(key)) continue;
+            if (WORKSPACE_AGENT_RECORD_IGNORED_KEY_RE.test(key)) continue;
             if (nested && typeof nested === 'object') collectWorkspaceAgentRecords(nested, fallbackId, out, depth + 1);
         }
         return out;
@@ -2458,8 +2514,9 @@
     function findWorkspaceAgentMarker(value, depth = 0) {
         if (!value || typeof value !== 'object' || depth > 8) return null;
         if (Array.isArray(value)) {
-            for (const item of value.slice(0, 120)) {
-                const marker = findWorkspaceAgentMarker(item, depth + 1);
+            const limit = Math.min(value.length, 120);
+            for (let index = 0; index < limit; index += 1) {
+                const marker = findWorkspaceAgentMarker(value[index], depth + 1);
                 if (marker) return marker;
             }
             return null;
@@ -2489,7 +2546,7 @@
         }
 
         for (const [key, nested] of Object.entries(value)) {
-            if (/prompt|content|text|parts/i.test(key)) continue;
+            if (WORKSPACE_AGENT_MARKER_IGNORED_KEY_RE.test(key)) continue;
             if (nested && typeof nested === 'object') {
                 const marker = findWorkspaceAgentMarker(nested, depth + 1);
                 if (marker) return marker;
@@ -2513,8 +2570,9 @@
     function findWorkspaceAgentRuntimeMarker(value, depth = 0) {
         if (!value || typeof value !== 'object' || depth > 10) return null;
         if (Array.isArray(value)) {
-            for (const item of value.slice(0, 160)) {
-                const marker = findWorkspaceAgentRuntimeMarker(item, depth + 1);
+            const limit = Math.min(value.length, 160);
+            for (let index = 0; index < limit; index += 1) {
+                const marker = findWorkspaceAgentRuntimeMarker(value[index], depth + 1);
                 if (marker) return marker;
             }
             return null;
@@ -2532,7 +2590,7 @@
         }
 
         const kind = String(value.name || value.type || value.ref_type || value.refType || value.kind || '');
-        if (/custom[_-]?agent[_-]?run/i.test(kind)) {
+        if (WORKSPACE_AGENT_CUSTOM_RUN_RE.test(kind)) {
             const id = getAgentIdFromValue(value.agent_id || value.agentId || value.agent?.id || value.custom_agent?.agent_id || value.customAgent?.agentId)
                 || getWorkspaceAgentIdFromSerialized(value.text)
                 || getWorkspaceAgentIdFromSerialized(value.value)
@@ -2559,8 +2617,8 @@
         }
 
         for (const [key, nested] of Object.entries(value)) {
-            if (/^(system_hints|systemHints)$/i.test(key)) continue;
-            if (/custom[_-]?agent[_-]?run/i.test(key)) {
+            if (WORKSPACE_AGENT_SYSTEM_HINT_KEY_RE.test(key)) continue;
+            if (WORKSPACE_AGENT_CUSTOM_RUN_RE.test(key)) {
                 const id = getWorkspaceAgentIdFromSerialized(nested) || getAgentIdFromValue(nested?.agent_id || nested?.agentId);
                 if (id) return { id, name: getWorkspaceAgent(id)?.name || id, source: 'custom_agent_run' };
             }
@@ -2575,8 +2633,9 @@
     function findWorkspaceAgentAuthorMarker(value, depth = 0) {
         if (!value || typeof value !== 'object' || depth > 8) return null;
         if (Array.isArray(value)) {
-            for (const item of value.slice(0, 160)) {
-                const marker = findWorkspaceAgentAuthorMarker(item, depth + 1);
+            const limit = Math.min(value.length, 160);
+            for (let index = 0; index < limit; index += 1) {
+                const marker = findWorkspaceAgentAuthorMarker(value[index], depth + 1);
                 if (marker) return marker;
             }
             return null;
@@ -2594,7 +2653,7 @@
         }
 
         for (const [key, nested] of Object.entries(value)) {
-            if (/^(content|parts|text|message|messages)$/i.test(key) && typeof nested === 'string') continue;
+            if (WORKSPACE_AGENT_AUTHOR_STRING_KEY_RE.test(key) && typeof nested === 'string') continue;
             if (nested && typeof nested === 'object') {
                 const marker = findWorkspaceAgentAuthorMarker(nested, depth + 1);
                 if (marker) return marker;
@@ -2933,50 +2992,51 @@
         return typeof mode?.kind === 'string' ? mode.kind : '';
     }
 
+    const STRUCTURED_AGENT_IGNORED_CONTENT_KEYS = new Set(['messages', 'content', 'parts', 'text', 'prompt']);
+    const STRUCTURED_AGENT_KEYS = [
+        'agent_id',
+        'agentId',
+        'agent_mode',
+        'agentMode',
+        'agentModeEnabled',
+        'is_agent_mode',
+        'isAgentMode',
+        'custom_agent',
+        'customAgent',
+        'workspace_agent',
+        'workspaceAgent',
+        'proxy_mode',
+        'proxyMode',
+        'proxyModeEnabled',
+        'conversation_agent',
+        'conversationAgent',
+        'agent',
+        'agents'
+    ];
+
     function getStructuredAgentSignal(value, depth = 0) {
         if (typeof value === 'string') return getAgentIdFromSystemHint(value) ? 'system_hints.custom_agent' : '';
         if (!value || typeof value !== 'object' || depth > 3) return '';
         if (Array.isArray(value)) {
-            for (const item of value.slice(0, 20)) {
-                const signal = getStructuredAgentSignal(item, depth + 1);
+            const limit = Math.min(value.length, 20);
+            for (let index = 0; index < limit; index += 1) {
+                const signal = getStructuredAgentSignal(value[index], depth + 1);
                 if (signal) return signal;
             }
             return '';
         }
 
-        const ignoredContentKeys = new Set(['messages', 'content', 'parts', 'text', 'prompt']);
-        const structuralKeys = [
-            'agent_id',
-            'agentId',
-            'agent_mode',
-            'agentMode',
-            'agentModeEnabled',
-            'is_agent_mode',
-            'isAgentMode',
-            'custom_agent',
-            'customAgent',
-            'workspace_agent',
-            'workspaceAgent',
-            'proxy_mode',
-            'proxyMode',
-            'proxyModeEnabled',
-            'conversation_agent',
-            'conversationAgent',
-            'agent',
-            'agents'
-        ];
-
-        for (const key of structuralKeys) {
+        for (const key of STRUCTURED_AGENT_KEYS) {
             if (Object.prototype.hasOwnProperty.call(value, key)) return key;
         }
 
         for (const [key, nested] of Object.entries(value)) {
-            if (ignoredContentKeys.has(key)) continue;
-            if (/^(system_hints|systemHints)$/i.test(key)) {
+            if (STRUCTURED_AGENT_IGNORED_CONTENT_KEYS.has(key)) continue;
+            if (WORKSPACE_AGENT_SYSTEM_HINT_KEY_RE.test(key)) {
                 const id = getAgentIdFromSystemHints(nested);
                 if (id) return `${key}.custom_agent`;
             }
-            if (/^(metadata|client_contextual_info|conversation_mode|conversationMode|system_hints|systemHints|mode|tools?|selected_tools|selectedTools|enabled_tools|enabledTools|features?|workspace|gizmo|assistant)$/i.test(key)) {
+            if (STRUCTURED_AGENT_CONTAINER_KEY_RE.test(key)) {
                 const text = typeof nested === 'string' ? nested : '';
                 if (/\b(agent|proxy|operator|workspace_agent)\b|代理模式/i.test(text)) return key;
                 const signal = getStructuredAgentSignal(nested, depth + 1);
@@ -3070,13 +3130,15 @@
         return null;
     }
 
-    function getRewriteBlockReason(payload) {
+    function getRewriteBlockReason(payload, packetContext = null) {
         const kind = getConversationModeKind(payload);
+        if (packetContext) packetContext.conversationMode = kind;
         if (kind && kind !== 'primary_assistant' && !isWorkConversationKind(kind)) {
             return `conversation_mode=${kind}`;
         }
 
         const structuredAgentSignal = getStructuredAgentSignal(payload);
+        if (packetContext) packetContext.agentSignal = structuredAgentSignal;
         if (structuredAgentSignal) return `agent_signal=${structuredAgentSignal}`;
 
         if (!isWorkspaceAgentSelection(S.model)) {
@@ -3086,6 +3148,7 @@
         }
 
         const composerAgent = getActiveComposerWorkspaceAgent();
+        if (packetContext) packetContext.composerAgent = composerAgent;
         if (composerAgent) return `composer_agent=${composerAgent.id || composerAgent.name || 'visible'}`;
 
         if (/^\/agents(?:\/|$)/.test(location.pathname)) return 'agents_page';
@@ -3113,31 +3176,40 @@
         updateDiagnostics();
     }
 
-    function buildConversationRequestPacket(payload, stage = 'before') {
+    function buildConversationRequestPacket(payload, stage = 'before', packetContext = null) {
         const rootHints = normalizeSystemHints(payload.system_hints ?? payload.systemHints);
-        const messageHints = Array.isArray(payload.messages)
-            ? payload.messages.flatMap(message => normalizeSystemHints(message?.metadata?.system_hints ?? message?.metadata?.systemHints))
-            : [];
-        const messageMetadataKeys = Array.isArray(payload.messages)
-            ? [...new Set(payload.messages.flatMap(message => Object.keys(message?.metadata || {})))]
-            : [];
-        const composerAgent = getActiveComposerWorkspaceAgent();
+        const messageHints = new Set();
+        const messageMetadataKeys = new Set();
+        if (Array.isArray(payload.messages)) {
+            payload.messages.forEach(message => {
+                for (const hint of normalizeSystemHints(message?.metadata?.system_hints ?? message?.metadata?.systemHints)) {
+                    messageHints.add(hint);
+                }
+            });
+            payload.messages.forEach(message => {
+                for (const key of Object.keys(message?.metadata || {})) messageMetadataKeys.add(key);
+            });
+        }
+        const hasComposerAgent = packetContext && Object.prototype.hasOwnProperty.call(packetContext, 'composerAgent');
+        const hasConversationMode = packetContext && Object.prototype.hasOwnProperty.call(packetContext, 'conversationMode');
+        const hasAgentSignal = packetContext && Object.prototype.hasOwnProperty.call(packetContext, 'agentSignal');
+        const composerAgent = hasComposerAgent ? packetContext.composerAgent : getActiveComposerWorkspaceAgent();
         const runtimeMarker = findWorkspaceAgentRuntimeMarker(payload);
         const hintMarker = findWorkspaceAgentMarker(payload);
         const packet = {
             stage,
             model: payload.model || null,
             selectedModel: S.model || null,
-            conversationMode: getConversationModeKind(payload) || null,
+            conversationMode: (hasConversationMode ? packetContext.conversationMode : getConversationModeKind(payload)) || null,
             rootSystemHints: rootHints,
-            messageSystemHints: [...new Set(messageHints)],
+            messageSystemHints: [...messageHints],
             rootKeys: Object.keys(payload).slice(0, 80),
-            messageMetadataKeys: messageMetadataKeys.slice(0, 80),
+            messageMetadataKeys: [...messageMetadataKeys].slice(0, 80),
             composerAgent: composerAgent ? { id: composerAgent.id, name: composerAgent.name || composerAgent.id } : null,
             runtimeAgent: runtimeMarker ? { id: runtimeMarker.id, name: runtimeMarker.name || runtimeMarker.id, source: runtimeMarker.source || '' } : null,
             hintAgent: hintMarker ? { id: hintMarker.id, name: hintMarker.name || hintMarker.id, source: hintMarker.source || '' } : null,
             forceParallelSwitch: payload.force_parallel_switch || payload.forceParallelSwitch || null,
-            agentSignal: getStructuredAgentSignal(payload) || null,
+            agentSignal: (hasAgentSignal ? packetContext.agentSignal : getStructuredAgentSignal(payload)) || null,
             action: payload.action || null,
             clientPrepareState: payload.client_prepare_state || payload.clientPrepareState || null,
             at: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
@@ -3195,8 +3267,7 @@
                 packet: sanitizeLogValue(packet || null),
                 extra: sanitizeLogValue(extra && typeof extra === 'object' ? extra : {})
             };
-            const next = [...readPacketLog(), entry].slice(-PACKET_LOG_LIMIT);
-            writePacketLog(next);
+            writePacketLog([...packetLog, entry]);
         } catch (error) {
             log('Packet log write failed', { error: error?.message || String(error) });
         }
@@ -3218,7 +3289,11 @@
     function collectPowFields(value, path = '', out = [], depth = 0) {
         if (out.length >= 32 || depth > 7 || value == null || typeof value !== 'object') return out;
         if (Array.isArray(value)) {
-            value.slice(0, 24).forEach((item, index) => collectPowFields(item, `${path}[${index}]`, out, depth + 1));
+            const limit = Math.min(value.length, 24);
+            for (let index = 0; index < limit; index += 1) {
+                if (!(index in value)) continue;
+                collectPowFields(value[index], `${path}[${index}]`, out, depth + 1);
+            }
             return out;
         }
         for (const [rawKey, nested] of Object.entries(value)) {
@@ -3272,7 +3347,7 @@
         if (!isSentinelRequirementsUrl(url)) return;
         const bodyText = await getRequestBodyText(input, init);
         const payload = parseJsonMaybe(bodyText);
-        const requestBodyFields = collectPowFields(payload || parseJsonMaybe(bodyText));
+        const requestBodyFields = collectPowFields(payload);
         const requestHeaders = mergeHeaders(input instanceof Request ? input.headers : null, init?.headers);
         const requestHeaderFields = collectPowHeaderFields(requestHeaders);
         let responseSample = '';
@@ -3377,10 +3452,10 @@
         log('Conversation request packet', packet);
     }
 
-    function rewriteConversationPayload(payload) {
+    function rewriteConversationPayload(payload, packetContext = null) {
         if (!(S.on && S.model) || !payload || typeof payload !== 'object') return null;
         if (!isConversationTurnPayload(payload)) return null;
-        const blockReason = getRewriteBlockReason(payload);
+        const blockReason = getRewriteBlockReason(payload, packetContext);
         if (blockReason) {
             recordRewriteSkip(payload, blockReason);
             appendPacketLog('rewrite-skip', buildConversationRequestPacket(payload, 'skip-model-rewrite'), {
@@ -3520,7 +3595,8 @@
             return { args, diagnostic: { ...injectionDiagnostic } };
         }
 
-        const rewriteInfo = rewriteConversationPayload(payload);
+        const packetContext = {};
+        const rewriteInfo = rewriteConversationPayload(payload, packetContext);
         if (!rewriteInfo) return null;
 
         const rewrittenBody = JSON.stringify(payload);
@@ -3544,7 +3620,7 @@
             at: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
             error: '',
             skipReason: '',
-            packetRequest: buildConversationRequestPacket(payload, 'after-model-rewrite'),
+            packetRequest: buildConversationRequestPacket(payload, 'after-model-rewrite', packetContext),
             packetResponse: null
         };
         appendPacketLog('model-rewrite', injectionDiagnostic.packetRequest, {
@@ -3646,7 +3722,8 @@
             return { body: JSON.stringify(payload), diagnostic: { ...injectionDiagnostic } };
         }
 
-        const rewriteInfo = rewriteConversationPayload(payload);
+        const packetContext = {};
+        const rewriteInfo = rewriteConversationPayload(payload, packetContext);
         if (!rewriteInfo) return null;
 
         S.cnt += 1;
@@ -3666,7 +3743,7 @@
             at: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
             error: '',
             skipReason: '',
-            packetRequest: buildConversationRequestPacket(payload, 'xhr-after-model-rewrite'),
+            packetRequest: buildConversationRequestPacket(payload, 'xhr-after-model-rewrite', packetContext),
             packetResponse: null
         };
         appendPacketLog('model-rewrite', injectionDiagnostic.packetRequest, {
@@ -3699,13 +3776,14 @@
         try { return JSON.parse(text); } catch { return null; }
     }
 
+    const ERROR_DETAIL_KEYS = ['error', 'message', 'detail', 'details', 'reason', 'title', 'description', 'code'];
+
     function extractErrorFromObject(value) {
         if (!value || typeof value !== 'object') return '';
         if (Array.isArray(value)) {
             return sanitizeErrorText(value.map(item => extractErrorFromObject(item) || item).filter(Boolean).join('; '));
         }
-        const keys = ['error', 'message', 'detail', 'details', 'reason', 'title', 'description', 'code'];
-        for (const key of keys) {
+        for (const key of ERROR_DETAIL_KEYS) {
             if (!(key in value)) continue;
             const nested = value[key];
             if (typeof nested === 'string' || typeof nested === 'number') return sanitizeErrorText(nested);
@@ -3749,6 +3827,27 @@
         return '';
     }
 
+    const RESPONSE_MODEL_FIELD_KEYS = new Set([
+        'model',
+        'model_id',
+        'modelId',
+        'model_slug',
+        'modelSlug',
+        'model_name',
+        'modelName',
+        'default_model_slug',
+        'requested_model_id',
+        'resolved_model_id',
+        'resolved_model',
+        'resolvedModel',
+        'actual_model_id',
+        'actual_model',
+        'actualModel',
+        'backend_model_id',
+        'backend_model',
+        'backendModel'
+    ]);
+
     function collectModelFields(value, out = new Set()) {
         if (!value || typeof value !== 'object') return out;
         if (Array.isArray(value)) {
@@ -3756,28 +3855,8 @@
             return out;
         }
 
-        const keys = [
-            'model',
-            'model_id',
-            'modelId',
-            'model_slug',
-            'modelSlug',
-            'model_name',
-            'modelName',
-            'default_model_slug',
-            'requested_model_id',
-            'resolved_model_id',
-            'resolved_model',
-            'resolvedModel',
-            'actual_model_id',
-            'actual_model',
-            'actualModel',
-            'backend_model_id',
-            'backend_model',
-            'backendModel'
-        ];
         for (const [key, nested] of Object.entries(value)) {
-            if (keys.includes(key) && typeof nested === 'string' && /^[a-z0-9][\w.-]{1,120}$/i.test(nested)) {
+            if (RESPONSE_MODEL_FIELD_KEYS.has(key) && typeof nested === 'string' && /^[a-z0-9][\w.-]{1,120}$/i.test(nested)) {
                 out.add(nested);
             }
             if (nested && typeof nested === 'object') collectModelFields(nested, out);
@@ -3785,23 +3864,37 @@
         return out;
     }
 
-    function extractResponseModel(sample, requestedModel = '') {
+    function analyzeResponseModelSample(sample, requestedModel = '', includePacketFields = false) {
         const text = String(sample || '').trim();
-        if (!text) return '';
+        if (!text) return { model: '', fields: [] };
 
-        const candidates = collectModelFields(parseJsonMaybe(text));
+        const responseCandidates = collectModelFields(parseJsonMaybe(text));
+        const packetCandidates = includePacketFields ? new Set(responseCandidates) : null;
         const lines = text.split(/\r?\n/);
         for (const line of lines) {
             const trimmed = line.trim();
-            if (!/^data:/i.test(trimmed)) continue;
-            const data = trimmed.replace(/^data:\s*/i, '').trim();
-            if (!data || data === '[DONE]') continue;
-            collectModelFields(parseJsonMaybe(data), candidates);
+            if (/^data:/i.test(trimmed)) {
+                const data = trimmed.replace(/^data:\s*/i, '').trim();
+                if (!data || data === '[DONE]') continue;
+                const frameCandidates = collectModelFields(parseJsonMaybe(data));
+                frameCandidates.forEach(value => {
+                    responseCandidates.add(value);
+                    packetCandidates?.add(value);
+                });
+            } else if (packetCandidates && /^[{[]/.test(trimmed)) {
+                collectModelFields(parseJsonMaybe(trimmed), packetCandidates);
+            }
         }
 
-        const values = [...candidates].filter(Boolean);
-        if (!values.length) return '';
-        return values.find(value => requestedModel && value !== requestedModel) || values[0];
+        const values = [...responseCandidates].filter(Boolean);
+        return {
+            model: values.find(value => requestedModel && value !== requestedModel) || values[0] || '',
+            fields: packetCandidates ? [...packetCandidates].slice(0, 32) : []
+        };
+    }
+
+    function extractResponseModel(sample, requestedModel = '') {
+        return analyzeResponseModelSample(sample, requestedModel).model;
     }
 
     function collectResponseJsonFrames(sample) {
@@ -3848,11 +3941,12 @@
     function observeWorkspaceAgentStreamSample(sample, diagnostic = {}) {
         const evidence = extractWorkspaceAgentFromResponseSample(sample);
         if (!evidence?.marker) return;
+        const conversationId = getCurrentConversationId();
         registerWorkspaceAgent({
             id: evidence.marker.id,
             name: evidence.marker.name,
-            conversations: getCurrentConversationId() ? [getCurrentConversationId()] : [],
-            lastConversationId: getCurrentConversationId()
+            conversations: conversationId ? [conversationId] : [],
+            lastConversationId: conversationId
         }, evidence.marker.source || 'stream');
         injectionDiagnostic = {
             ...injectionDiagnostic,
@@ -3989,18 +4083,7 @@
         return Boolean(requested && response && requested !== response);
     }
 
-    function collectResponseModelCandidates(sample) {
-        const candidates = collectModelFields(parseJsonMaybe(sample));
-        const text = String(sample || '');
-        text.split(/\r?\n/).forEach(line => {
-            const trimmed = line.trim();
-            if (/^data:/i.test(trimmed)) collectModelFields(parseJsonMaybe(trimmed.replace(/^data:\s*/i, '')), candidates);
-            else if (/^[{[]/.test(trimmed)) collectModelFields(parseJsonMaybe(trimmed), candidates);
-        });
-        return [...candidates].slice(0, 32);
-    }
-
-    function updateResponsePacket(diagnostic, responseModel, source, sample = '', status = 0) {
+    function updateResponsePacket(diagnostic, responseModel, source, sample = '', status = 0, modelFields = null) {
         if (diagnostic?.at && injectionDiagnostic.at && diagnostic.at !== injectionDiagnostic.at) return;
         const requestedModel = diagnostic?.lastModel || injectionDiagnostic.lastModel || S.model || '';
         const response = responseModel || '';
@@ -4013,7 +4096,7 @@
                 kind: 'model',
                 requestedModel,
                 responseModel: response,
-                modelFields: collectResponseModelCandidates(sample),
+                modelFields: modelFields || analyzeResponseModelSample(sample, '', true).fields,
                 source: source || 'response',
                 status: Number(status || 0),
                 mismatch,
@@ -4076,8 +4159,9 @@
             } catch (error) {
                 log('Failed to read failed rewrite response', error);
             }
-            const responseModel = extractResponseModel(sample, diagnostic?.lastModel || '');
-            updateResponsePacket(diagnostic, responseModel, 'fetch-error', sample, response.status);
+            const responseAnalysis = analyzeResponseModelSample(sample, diagnostic?.lastModel || '', true);
+            const responseModel = responseAnalysis.model;
+            updateResponsePacket(diagnostic, responseModel, 'fetch-error', sample, response.status, responseAnalysis.fields);
             updateRewriteRoute(diagnostic, responseModel);
             const failure = formatHttpFailure(response, sample);
             updateRewriteFailure(diagnostic, failure);
@@ -4086,10 +4170,11 @@
         }
 
         updateRewriteFailure(diagnostic, '');
-        if (/text\/event-stream|application\/x-ndjson/i.test(contentType)) {
+        if (STREAM_CONTENT_TYPE_RE.test(contentType)) {
             readResponseSample(response, 12000).then(sample => {
-                const responseModel = extractResponseModel(sample, diagnostic?.lastModel || '');
-                updateResponsePacket(diagnostic, responseModel, 'fetch-stream', sample, response.status);
+                const responseAnalysis = analyzeResponseModelSample(sample, diagnostic?.lastModel || '', true);
+                const responseModel = responseAnalysis.model;
+                updateResponsePacket(diagnostic, responseModel, 'fetch-stream', sample, response.status, responseAnalysis.fields);
                 updateRewriteRoute(diagnostic, responseModel);
                 observeWorkspaceAgentStreamSample(sample, { ...diagnostic, responseModel });
                 const streamFailure = extractResponseError(sample, true);
@@ -4097,8 +4182,9 @@
             }).catch(error => log('Stream response observer failed', error));
         } else if (/json/i.test(contentType)) {
             readResponseSample(response, 4000).then(sample => {
-                const responseModel = extractResponseModel(sample, diagnostic?.lastModel || '');
-                updateResponsePacket(diagnostic, responseModel, 'fetch-json', sample, response.status);
+                const responseAnalysis = analyzeResponseModelSample(sample, diagnostic?.lastModel || '', true);
+                const responseModel = responseAnalysis.model;
+                updateResponsePacket(diagnostic, responseModel, 'fetch-json', sample, response.status, responseAnalysis.fields);
                 updateRewriteRoute(diagnostic, responseModel);
                 observeWorkspaceAgentStreamSample(sample, { ...diagnostic, responseModel });
             }).catch(error => log('JSON response observer failed', error));
@@ -4111,7 +4197,7 @@
     function observeConversationStreamResponse(url, response) {
         if (!isConversationEndpointUrl(url) || !response?.ok) return;
         const contentType = response.headers?.get?.('content-type') || '';
-        if (!/text\/event-stream|application\/x-ndjson|json/i.test(contentType)) return;
+        if (!RESPONSE_CAPTURE_CONTENT_TYPE_RE.test(contentType)) return;
         readResponseSample(response, 12000).then(sample => {
             observeWorkspaceAgentStreamSample(sample, { responseModel: extractResponseModel(sample, injectionDiagnostic.lastModel || S.model || '') });
         }).catch(error => log('Conversation stream observer failed', error));
@@ -4321,8 +4407,9 @@
                             } else {
                                 updateRewriteFailure(rewritten.diagnostic, '');
                             }
-                            const responseModel = extractResponseModel(sample, rewritten.diagnostic?.lastModel || '');
-                            updateResponsePacket(rewritten.diagnostic, responseModel, 'xhr', sample, status);
+                            const responseAnalysis = analyzeResponseModelSample(sample, rewritten.diagnostic?.lastModel || '', true);
+                            const responseModel = responseAnalysis.model;
+                            updateResponsePacket(rewritten.diagnostic, responseModel, 'xhr', sample, status, responseAnalysis.fields);
                             updateRewriteRoute(rewritten.diagnostic, responseModel);
                             observeWorkspaceAgentStreamSample(sample, { ...rewritten.diagnostic, responseModel });
                             appendPacketLog('xhr-response', rewritten.diagnostic.packetRequest || null, {
@@ -5832,9 +5919,8 @@
         return `${injectionDiagnostic.responseModel} / ${t(injectionDiagnostic.routeStatus === 'routed' ? 'route_routed' : 'route_same')}`;
     }
 
-    function getDiagnosticSummaryText() {
+    function getDiagnosticSummaryText(route = getDiagnosticRouteText()) {
         const model = truncate(getDisplayName(S.model), 22);
-        const route = getDiagnosticRouteText();
         const status = injectionDiagnostic.error ? t('diagnostic_status_error') : t('diagnostic_status_ok');
         return `${model} · ${route} · ${status}`;
     }
@@ -5901,8 +5987,9 @@
     function summarizePacketRequest() {
         const packet = injectionDiagnostic.packetRequest;
         if (!packet) return getPacketUiText('none');
-        const hints = [...new Set([...(packet.rootSystemHints || []), ...(packet.messageSystemHints || [])])];
-        const hintText = hints.length ? hints.join(', ') : getPacketUiText('noHint');
+        const hints = new Set(packet.rootSystemHints || []);
+        for (const hint of packet.messageSystemHints || []) hints.add(hint);
+        const hintText = hints.size ? [...hints].join(', ') : getPacketUiText('noHint');
         const agentText = packet.runtimeAgent?.id
             ? `runtime=${packet.runtimeAgent.id}`
             : packet.composerAgent?.id
@@ -5933,8 +6020,7 @@
         return `${subject} | ${modelStatus}${agentStatus ? ` / ${agentStatus}` : ''} | ${packet.source || '-'}`;
     }
 
-    function getDiagnosticWorkspaceAgentText() {
-        const selectedId = getWorkspaceAgentId();
+    function getDiagnosticWorkspaceAgentText(selectedId = getWorkspaceAgentId()) {
         const id = injectionDiagnostic.workspaceAgentId || selectedId;
         if (!id) return t('workspace_agent_none');
         const name = injectionDiagnostic.workspaceAgentName || getWorkspaceAgent(id)?.name || id;
@@ -6020,6 +6106,9 @@
         const pow = q('mi-diag-pow');
         const error = q('mi-diag-error');
         if (!selected || !last || !error) return;
+        const defaultModelLabel = S.model ? '' : t('default_model');
+        const selectedModelText = S.model || defaultModelLabel;
+        let routeText = null;
 
         if (diag) {
             diag.classList.toggle('open', S.diagOpen);
@@ -6034,8 +6123,9 @@
             panel.toggleAttribute('inert', !S.diagOpen);
         }
         if (summary) {
-            summary.textContent = getDiagnosticSummaryText();
-            summary.title = `${t('diagnostic_selected')}: ${S.model || t('default_model')} | ${t('diagnostic_response_model')}: ${getDiagnosticRouteText()} | ${t('diagnostic_error')}: ${injectionDiagnostic.error || t('diagnostic_none')}`;
+            routeText = getDiagnosticRouteText();
+            summary.textContent = getDiagnosticSummaryText(routeText);
+            summary.title = `${t('diagnostic_selected')}: ${selectedModelText} | ${t('diagnostic_response_model')}: ${routeText} | ${t('diagnostic_error')}: ${injectionDiagnostic.error || t('diagnostic_none')}`;
         }
         if (title) title.textContent = t('diagnostic_title');
         if (selectedKey) selectedKey.textContent = t('diagnostic_selected');
@@ -6047,12 +6137,12 @@
         if (packetResKey) packetResKey.textContent = getPacketUiText('response');
         if (powKey) powKey.textContent = t('diagnostic_pow');
         if (errorKey) errorKey.textContent = t('diagnostic_error');
-        selected.textContent = S.model || t('default_model');
-        selected.title = S.model || t('default_model');
+        selected.textContent = selectedModelText;
+        selected.title = selectedModelText;
         last.textContent = injectionDiagnostic.skipReason
             ? `${t('diagnostic_skipped_agent')} @ ${injectionDiagnostic.at}`
             : injectionDiagnostic.at
-            ? `${injectionDiagnostic.lastModel || t('default_model')} @ ${injectionDiagnostic.at}`
+            ? `${injectionDiagnostic.lastModel || defaultModelLabel || t('default_model')} @ ${injectionDiagnostic.at}`
             : t('diagnostic_not_yet');
         last.title = injectionDiagnostic.skipReason
             ? injectionDiagnostic.skipReason
@@ -6067,16 +6157,19 @@
             effort.classList.toggle('is-muted', !injectionDiagnostic.effortApplied);
         }
         if (route) {
-            route.textContent = getDiagnosticRouteText();
+            if (routeText == null) routeText = getDiagnosticRouteText();
+            route.textContent = routeText;
             route.title = injectionDiagnostic.responseModel
                 ? `requested=${injectionDiagnostic.lastModel || S.model || ''}; response=${injectionDiagnostic.responseModel}`
                 : t('route_hidden');
             route.classList.toggle('is-muted', !injectionDiagnostic.responseModel);
         }
         if (agent) {
-            agent.textContent = getDiagnosticWorkspaceAgentText();
-            agent.title = injectionDiagnostic.workspaceAgentId || getWorkspaceAgentId() || '';
-            agent.classList.toggle('is-muted', !(injectionDiagnostic.workspaceAgentId || getWorkspaceAgentId()));
+            const selectedAgentId = getWorkspaceAgentId();
+            const agentId = injectionDiagnostic.workspaceAgentId || selectedAgentId;
+            agent.textContent = getDiagnosticWorkspaceAgentText(selectedAgentId);
+            agent.title = agentId || '';
+            agent.classList.toggle('is-muted', !agentId);
         }
         if (packetReq) {
             packetReq.textContent = summarizePacketRequest();
@@ -6330,6 +6423,16 @@
         return presentations;
     }
 
+    function getMenuModelData() {
+        if (menuModelCache.source !== S.api) {
+            const items = collectMenuModelItems();
+            menuModelCache.items = items;
+            menuModelCache.presentations = buildModelPresentations(items);
+            menuModelCache.source = S.api;
+        }
+        return menuModelCache;
+    }
+
     function renderModelOption(id, name, entry, presentation = null) {
         const badges = [];
         if (entry?.tokens) badges.push(fmtTok(entry.tokens));
@@ -6557,8 +6660,7 @@
         let offlineItems = [];
         let offlineExpanded = false;
 
-        const mergedItems = collectMenuModelItems();
-        const modelPresentations = buildModelPresentations(mergedItems);
+        const { items: mergedItems, presentations: modelPresentations } = getMenuModelData();
 
         const agentItems = [...S.agents];
         const selectedAgentId = getWorkspaceAgentId();
@@ -6837,9 +6939,10 @@
         }
         const exportButton = q('mi-export-packets');
         if (exportButton) exportButton.disabled = !S.debug;
-        if (q('mi-st')) {
-            q('mi-st').textContent = S.on ? (getDisplayName(S.model) || t('status_ready')) : t('paused');
-            q('mi-st').classList.toggle('paused', !S.on);
+        const status = q('mi-st');
+        if (status) {
+            status.textContent = S.on ? (getDisplayName(S.model) || t('status_ready')) : t('paused');
+            status.classList.toggle('paused', !S.on);
         }
     }
 
@@ -9415,10 +9518,14 @@
 }
 .mi-color-row label,
 #mi-lang-row label,
-.mi-debug-row label {
+.mi-debug-row > label {
+    flex: 1 1 auto;
+    min-width: 0;
     color: rgba(235,235,245,0.7);
     font-size: 12px;
     font-weight: 600;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
 }
 .mi-debug-row {
     margin-top: 0;
@@ -9444,6 +9551,7 @@
 }
 .mi-privacy-head {
     display: grid;
+    flex: 1 1 auto;
     gap: 1px;
     min-width: 0;
 }
@@ -9544,6 +9652,7 @@
 }
 .mi-lang-trigger {
     width: 100%;
+    min-width: 0;
     padding: 10px 38px 10px 12px;
     border-radius: var(--mi-radius-md);
     border: 1px solid rgba(255,255,255,0.12);
@@ -9551,13 +9660,18 @@
         linear-gradient(180deg, rgba(0,0,0,0.25) 0%, rgba(0,0,0,0.2) 100%),
         linear-gradient(135deg, rgba(255,255,255,0.04), rgba(255,255,255,0));
     color: var(--mi-text-primary);
-    font: 500 13px/1 var(--mi-font);
+    font: 500 13px/1.25 var(--mi-font);
     text-align: left;
     outline: none;
     cursor: pointer;
     box-shadow: inset 0 1px 0 rgba(255,255,255,0.06);
     transition: border-color 0.2s var(--mi-ease), box-shadow 0.2s var(--mi-ease), background 0.2s var(--mi-ease), transform 0.2s var(--mi-ease);
     position: relative;
+}
+.mi-lang-trigger > span {
+    display: block;
+    min-width: 0;
+    overflow-wrap: anywhere;
 }
 .mi-lang-trigger::after {
     content: '';
@@ -10105,11 +10219,14 @@
     padding: 14px 22px;
     background: linear-gradient(180deg, rgba(0,0,0,0.1) 0%, rgba(0,0,0,0.15) 100%);
     border-top: 1px solid transparent;
-    display: flex;
-    justify-content: space-between;
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr);
+    align-items: center;
+    gap: 10px;
     position: relative;
 }
 .mi-link-btn {
+    min-width: 0;
     background: none;
     border: 1px solid transparent;
     color: var(--mi-text-secondary);
@@ -10127,19 +10244,32 @@
 }
 .mi-link-btn:hover { background: rgba(255,255,255,0.08); color: var(--mi-text-primary); transform: translateY(-2px); }
 #mi-sponsor-slot {
-    margin-left: auto;
-    display: flex;
-    align-items: center;
-    justify-content: flex-end;
+    min-width: 0;
+    width: 100%;
+    margin-left: 0;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: stretch;
+    justify-content: stretch;
     gap: 8px;
-    flex-wrap: wrap;
+}
+#mi-sponsor-slot:not(:has(.mi-sponsor)) {
+    grid-template-columns: minmax(0, max-content);
+    justify-content: end;
+}
+#mi-sponsor-slot > a {
+    min-width: 0;
+    max-width: 100%;
 }
 .mi-repo-link,
 .mi-sponsor {
     display: inline-flex;
     align-items: center;
+    justify-content: center;
+    min-width: 0;
+    min-height: 40px;
     gap: 8px;
-    padding: 10px 14px;
+    padding: 9px 10px;
     border-radius: var(--mi-radius-md);
     color: var(--mi-text-secondary);
     text-decoration: none;
@@ -10169,18 +10299,30 @@
     stroke-linecap: round;
     stroke-linejoin: round;
 }
-.mi-repo-text {
+.mi-repo-text,
+.mi-sponsor-text {
+    display: block;
+    min-width: 0;
+    max-width: 100%;
     font-size: 12px;
     font-weight: 600;
-    white-space: nowrap;
+    line-height: 1.2;
+    text-align: center;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    text-wrap: balance;
 }
 .mi-sponsor-icon {
+    flex: 0 0 auto;
     font-size: 14px;
     line-height: 1;
 }
-.mi-sponsor-text {
-    font-size: 12px;
-    font-weight: 600;
+/* Cyrillic labels need a little more text width than an inline icon row allows. */
+#mi:lang(ru) .mi-repo-link,
+#mi:lang(ru) .mi-sponsor {
+    flex-direction: column;
+    gap: 3px;
+    padding: 7px 8px;
 }
 .mi-clrs {
     flex: 0 0 auto;

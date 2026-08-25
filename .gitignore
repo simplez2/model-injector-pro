@@ -55,3 +55,5 @@ screenshot/
 *.crx
 *.pem
 *.zip
+# Local Web GPT handoff artifacts
+.web-for-codex/

@@ -14,6 +14,14 @@ const ACCEPT_LANGUAGE_RESOURCE_TYPES = [
   'object', 'xmlhttprequest', 'ping', 'csp_report', 'media',
   'websocket', 'webbundle', 'other',
 ];
+const ACCEPT_LANGUAGE_INITIATOR_RESOURCE_TYPES = ACCEPT_LANGUAGE_RESOURCE_TYPES.filter(
+  type => type !== 'main_frame',
+);
+const GEO_ENDPOINTS = [
+  'https://ipwho.is/',
+  'https://get.geojs.io/v1/ip/geo.json',
+  'https://ipapi.co/json/',
+];
 
 let geoCache = null;
 let geoCacheAt = 0;
@@ -111,15 +119,10 @@ async function lookupGeo(force) {
   if (!force && geoInFlight) return geoInFlight;
 
   geoInFlight = (async () => {
-    const endpoints = [
-      () => fetchJson('https://ipwho.is/'),
-      () => fetchJson('https://get.geojs.io/v1/ip/geo.json'),
-      () => fetchJson('https://ipapi.co/json/'),
-    ];
     let lastError = null;
-    for (const load of endpoints) {
+    for (const endpoint of GEO_ENDPOINTS) {
       try {
-        const geo = normalizeGeo(await load());
+        const geo = normalizeGeo(await fetchJson(endpoint));
         if (geo) {
           geoCache = geo;
           geoCacheAt = Date.now();
@@ -168,7 +171,7 @@ async function setPersistentAcceptLanguageRules(enabled, value) {
       action: acceptLanguageAction(value),
       condition: {
         initiatorDomains: SUPPORTED_REQUEST_DOMAINS,
-        resourceTypes: ACCEPT_LANGUAGE_RESOURCE_TYPES.filter(type => type !== 'main_frame'),
+        resourceTypes: ACCEPT_LANGUAGE_INITIATOR_RESOURCE_TYPES,
       },
     },
   ];
@@ -181,11 +184,14 @@ async function setAcceptLanguageRule(tabId, enabled, value) {
   try {
     await setPersistentAcceptLanguageRules(enabled, value);
     const existing = await chrome.declarativeNetRequest.getSessionRules();
-    const removeRuleIds = existing
-      .filter(rule => rule.id === LEGACY_ACCEPT_LANGUAGE_RULE_ID
+    const removeRuleIds = [];
+    for (const rule of existing) {
+      if (rule.id === LEGACY_ACCEPT_LANGUAGE_RULE_ID
         || rule.id === ruleId
-        || rule.condition?.tabIds?.includes(tabId))
-      .map(rule => rule.id);
+        || rule.condition?.tabIds?.includes(tabId)) {
+        removeRuleIds.push(rule.id);
+      }
+    }
     if (!enabled || !value) {
       if (removeRuleIds.length) {
         await chrome.declarativeNetRequest.updateSessionRules({ removeRuleIds });
