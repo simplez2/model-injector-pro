@@ -459,6 +459,12 @@
             pow_not_seen: '尚未获取',
             pow_absent: '未返回 difficulty',
             pow_not_required: '无需 PoW',
+            pow_grade_excellent: '优秀',
+            pow_grade_normal: '正常',
+            pow_grade_elevated: '风险偏高',
+            pow_grade_high_risk: '高风险',
+            pow_grade_unknown: '未知',
+            pow_grade_disclaimer: '评级按公开社区工具常用的十六进制有效位数规则生成，仅供趋势参考，不是 OpenAI 官方等级。',
             diagnostic_workspace_agent: 'Workspace Agent',
             diagnostic_error: '失败原因',
             diagnostic_none: '无',
@@ -577,6 +583,12 @@
             pow_not_seen: 'Not captured',
             pow_absent: 'No difficulty returned',
             pow_not_required: 'PoW not required',
+            pow_grade_excellent: 'Excellent',
+            pow_grade_normal: 'Normal',
+            pow_grade_elevated: 'Elevated risk',
+            pow_grade_high_risk: 'High risk',
+            pow_grade_unknown: 'Unknown',
+            pow_grade_disclaimer: 'The rating uses a hexadecimal significant-digit rule commonly used by community tools. It is for trend reference only, not an official OpenAI rating.',
             diagnostic_workspace_agent: 'Workspace Agent',
             diagnostic_error: 'Failure reason',
             diagnostic_none: 'None',
@@ -695,6 +707,12 @@
             pow_not_seen: '未取得',
             pow_absent: 'difficulty なし',
             pow_not_required: 'PoW 不要',
+            pow_grade_excellent: '優秀',
+            pow_grade_normal: '正常',
+            pow_grade_elevated: 'リスクやや高め',
+            pow_grade_high_risk: '高リスク',
+            pow_grade_unknown: '不明',
+            pow_grade_disclaimer: '評価はコミュニティツールで一般的な16進数の有効桁数ルールによる参考値で、OpenAI公式の評価ではありません。',
             diagnostic_workspace_agent: 'Workspace Agent',
             diagnostic_error: '失敗理由',
             diagnostic_none: 'なし',
@@ -813,6 +831,12 @@
             pow_not_seen: 'Не получено',
             pow_absent: 'Difficulty не возвращён',
             pow_not_required: 'PoW не требуется',
+            pow_grade_excellent: 'Отлично',
+            pow_grade_normal: 'Норма',
+            pow_grade_elevated: 'Повышенный риск',
+            pow_grade_high_risk: 'Высокий риск',
+            pow_grade_unknown: 'Неизвестно',
+            pow_grade_disclaimer: 'Оценка основана на правиле значащих шестнадцатеричных разрядов, принятом в инструментах сообщества. Это лишь ориентир, а не официальная оценка OpenAI.',
             diagnostic_workspace_agent: 'Workspace Agent',
             diagnostic_error: 'Причина ошибки',
             diagnostic_none: 'Нет',
@@ -3273,11 +3297,28 @@
         }
     }
 
-    function parsePowDifficultyDecimal(value) {
+    function normalizePowDifficulty(value) {
         const normalized = String(value || '').trim().replace(/^0x/i, '');
-        if (!/^[0-9a-f]+$/i.test(normalized) || normalized.length > 13) return null;
+        return /^[0-9a-f]+$/i.test(normalized) ? normalized : '';
+    }
+
+    function parsePowDifficultyDecimal(value) {
+        const normalized = normalizePowDifficulty(value);
+        if (!normalized || normalized.length > 13) return null;
         const decimal = Number.parseInt(normalized, 16);
         return Number.isSafeInteger(decimal) ? decimal : null;
+    }
+
+    function getPowDifficultyGrade(value) {
+        const normalized = normalizePowDifficulty(value);
+        if (!normalized) return { key: 'unknown', tone: 'muted', significantHexLength: 0 };
+
+        const significant = normalized.replace(/^0+/, '') || '0';
+        const significantHexLength = significant.length;
+        if (significantHexLength >= 5) return { key: 'excellent', tone: 'success', significantHexLength };
+        if (significantHexLength === 4) return { key: 'normal', tone: 'normal', significantHexLength };
+        if (significantHexLength === 3) return { key: 'elevated', tone: 'warning', significantHexLength };
+        return { key: 'high_risk', tone: 'danger', significantHexLength };
     }
 
     function extractPowRequirement(payload) {
@@ -5925,7 +5966,8 @@
         if (record.required === false && !record.difficulty) return t('pow_not_required');
         if (!record.difficulty) return t('pow_absent');
         const decimal = Number.isSafeInteger(record.difficultyDecimal) ? ` (${record.difficultyDecimal})` : '';
-        return `${record.difficulty}${decimal}`;
+        const grade = getPowDifficultyGrade(record.difficulty);
+        return `${record.difficulty}${decimal} · ${t(`pow_grade_${grade.key}`)}`;
     }
 
     function summarizePacketRequest() {
@@ -6126,10 +6168,17 @@
             packetRes.classList.toggle('is-muted', !injectionDiagnostic.packetResponse);
         }
         if (pow) {
+            const grade = getPowDifficultyGrade(lastPowDetection?.difficulty);
+            const gradeText = t(`pow_grade_${grade.key}`);
             pow.textContent = getDiagnosticPowText();
-            pow.title = lastPowDetection ? JSON.stringify(lastPowDetection, null, 2) : '';
-            pow.classList.toggle('is-muted', !lastPowDetection);
-            pow.classList.toggle('has-error', false);
+            pow.title = lastPowDetection
+                ? `${t('pow_grade_disclaimer')}\n\n${JSON.stringify({ ...lastPowDetection, grade: gradeText, significantHexLength: grade.significantHexLength }, null, 2)}`
+                : '';
+            pow.classList.toggle('is-muted', !lastPowDetection || grade.tone === 'muted');
+            pow.classList.toggle('is-success', grade.tone === 'success');
+            pow.classList.toggle('is-normal', grade.tone === 'normal');
+            pow.classList.toggle('is-warning', grade.tone === 'warning');
+            pow.classList.toggle('has-error', grade.tone === 'danger');
         }
         error.textContent = injectionDiagnostic.error || t('diagnostic_none');
         error.title = injectionDiagnostic.error || '';
@@ -10077,6 +10126,15 @@
 }
 .mi-diag-grid strong.is-muted {
     color: rgba(235,235,245,0.48);
+}
+.mi-diag-grid strong.is-success {
+    color: #86efac;
+}
+.mi-diag-grid strong.is-normal {
+    color: #bef264;
+}
+.mi-diag-grid strong.is-warning {
+    color: #fde68a;
 }
 .mi-diag-grid strong.has-error {
     color: #fca5a5;
