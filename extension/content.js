@@ -5,16 +5,14 @@
 
     const PREFIX = 'cgpt_v12_';
     const IS_TOP_FRAME = window.top === window;
-    const SCRIPT_BUILD = '2026-08-24-pow-route-dedup-v22';
+    const SCRIPT_BUILD = '2026-08-25-pow-difficulty-v23';
     const PROJECT_REPOSITORY_URL = 'https://github.com/simplez2/model-injector-pro';
     const PACKET_LOG_LIMIT = 48;
     const MODELS_ENDPOINT = '/backend-api/models';
     const CES_STATS_ENDPOINT = '/ces/statsc/flush';
-    const SENTINEL_FINALIZE_ENDPOINT = '/backend-api/sentinel/chat-requirements/finalize';
-    const SENTINEL_REQUIREMENTS_PATH_RE = /^\/backend-api\/sentinel\/chat-requirements(?:\/|$)/i;
-    // Presence-only diagnostics. Never store or print the PoW/proof value itself.
-    const POW_FIELD_RE = /^(?:pow|pow_token|powToken|proof|proof_token|proofToken|proof_of_work|proofOfWork|work_factor|workFactor|nonce|challenge|challenge_token|challengeToken)$/i;
-    const POW_HEADER_RE = /(?:^|[-_])(pow|proof|challenge|nonce)(?:$|[-_])/i;
+    const SENTINEL_REQUIREMENTS_PREPARE_PATH_RE = /^\/(?:backend-api|backend-anon|api|unauth-mweb)\/sentinel\/chat-requirements(?:\/prepare)?\/?$/i;
+    const SENTINEL_REQUIREMENTS_FINALIZE_PATH_RE = /^\/(?:backend-api|backend-anon|api|unauth-mweb)\/sentinel\/chat-requirements\/finalize\/?$/i;
+    // PoW diagnostics read only the public requirement metadata. Never keep seed, proof, or token contents.
     const WORKSPACE_AGENT_PREFIX = 'workspace-agent:';
     const HERMES_AGENT_PATH_RE = /\/backend-api\/hermes\/agent\/(agt_[a-z0-9_:-]+)(?:\/|$)/i;
     const AGENT_PAGE_PATH_RE = /\/agents\/a\/(agt_[a-z0-9_:-]+)/i;
@@ -457,10 +455,10 @@
             diagnostic_last: '上次改写',
             diagnostic_effort: '思考深度',
             diagnostic_response_model: '响应模型',
-            diagnostic_pow: 'PoW 检测',
-            pow_not_seen: '尚未发现',
-            pow_present: '已发现字段',
-            pow_absent: '未发现字段',
+            diagnostic_pow: 'PoW 难度',
+            pow_not_seen: '尚未获取',
+            pow_absent: '未返回 difficulty',
+            pow_not_required: '无需 PoW',
             diagnostic_workspace_agent: 'Workspace Agent',
             diagnostic_error: '失败原因',
             diagnostic_none: '无',
@@ -575,10 +573,10 @@
             diagnostic_last: 'Last rewrite',
             diagnostic_effort: 'Thinking effort',
             diagnostic_response_model: 'Response model',
-            diagnostic_pow: 'PoW detection',
-            pow_not_seen: 'Not observed',
-            pow_present: 'Field present',
-            pow_absent: 'No field',
+            diagnostic_pow: 'PoW difficulty',
+            pow_not_seen: 'Not captured',
+            pow_absent: 'No difficulty returned',
+            pow_not_required: 'PoW not required',
             diagnostic_workspace_agent: 'Workspace Agent',
             diagnostic_error: 'Failure reason',
             diagnostic_none: 'None',
@@ -693,10 +691,10 @@
             diagnostic_last: '前回の書き換え',
             diagnostic_effort: '思考深度',
             diagnostic_response_model: '応答モデル',
-            diagnostic_pow: 'PoW 検出',
-            pow_not_seen: '未観測',
-            pow_present: 'フィールドあり',
-            pow_absent: 'フィールドなし',
+            diagnostic_pow: 'PoW 難易度',
+            pow_not_seen: '未取得',
+            pow_absent: 'difficulty なし',
+            pow_not_required: 'PoW 不要',
             diagnostic_workspace_agent: 'Workspace Agent',
             diagnostic_error: '失敗理由',
             diagnostic_none: 'なし',
@@ -811,10 +809,10 @@
             diagnostic_last: 'Последняя подмена',
             diagnostic_effort: 'Глубина мышления',
             diagnostic_response_model: 'Модель ответа',
-            diagnostic_pow: 'Проверка PoW',
-            pow_not_seen: 'Не наблюдалось',
-            pow_present: 'Поле найдено',
-            pow_absent: 'Поле не найдено',
+            diagnostic_pow: 'Сложность PoW',
+            pow_not_seen: 'Не получено',
+            pow_absent: 'Difficulty не возвращён',
+            pow_not_required: 'PoW не требуется',
             diagnostic_workspace_agent: 'Workspace Agent',
             diagnostic_error: 'Причина ошибки',
             diagnostic_none: 'Нет',
@@ -2849,9 +2847,11 @@
         return getSameOriginUrl(value)?.pathname === pathname;
     }
 
-    function isSentinelRequirementsUrl(value) {
+    function getSentinelRequirementsPhase(value) {
         const pathname = getSameOriginUrl(value)?.pathname || '';
-        return SENTINEL_REQUIREMENTS_PATH_RE.test(pathname);
+        if (SENTINEL_REQUIREMENTS_PREPARE_PATH_RE.test(pathname)) return 'prepare';
+        if (SENTINEL_REQUIREMENTS_FINALIZE_PATH_RE.test(pathname)) return 'finalize';
+        return '';
     }
 
     function mergeHeaders(...sources) {
@@ -3273,136 +3273,80 @@
         }
     }
 
-    function summarizePowValue(value) {
-        if (value === undefined) return { present: false, empty: true, type: 'undefined', length: 0 };
-        if (value === null) return { present: false, empty: true, type: 'null', length: 0 };
-        if (typeof value === 'string') {
-            return { present: value.length > 0, empty: value.length === 0, type: 'string', length: value.length };
-        }
-        if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') {
-            return { present: true, empty: false, type: typeof value, length: String(value).length };
-        }
-        if (Array.isArray(value)) return { present: value.length > 0, empty: value.length === 0, type: 'array', length: value.length };
-        return { present: true, empty: false, type: 'object', length: Object.keys(value).length };
+    function parsePowDifficultyDecimal(value) {
+        const normalized = String(value || '').trim().replace(/^0x/i, '');
+        if (!/^[0-9a-f]+$/i.test(normalized) || normalized.length > 13) return null;
+        const decimal = Number.parseInt(normalized, 16);
+        return Number.isSafeInteger(decimal) ? decimal : null;
     }
 
-    function collectPowFields(value, path = '', out = [], depth = 0) {
-        if (out.length >= 32 || depth > 7 || value == null || typeof value !== 'object') return out;
-        if (Array.isArray(value)) {
-            const limit = Math.min(value.length, 24);
-            for (let index = 0; index < limit; index += 1) {
-                if (!(index in value)) continue;
-                collectPowFields(value[index], `${path}[${index}]`, out, depth + 1);
-            }
-            return out;
-        }
-        for (const [rawKey, nested] of Object.entries(value)) {
-            if (out.length >= 32) break;
-            const key = String(rawKey || '').slice(0, 80);
-            const childPath = path ? `${path}.${key}` : key;
-            if (POW_FIELD_RE.test(key)) {
-                const summary = summarizePowValue(nested);
-                out.push({ path: childPath.slice(0, 180), key, ...summary });
-            }
-            if (nested && typeof nested === 'object') collectPowFields(nested, childPath, out, depth + 1);
-        }
-        return out;
-    }
-
-    function collectPowFieldsFromSample(sample) {
-        const frames = collectResponseJsonFrames(sample);
-        const fields = [];
-        frames.forEach(frame => collectPowFields(frame, '', fields));
-        const seen = new Set();
-        return fields.filter(field => {
-            const key = `${field.path}:${field.type}:${field.length}`;
-            if (seen.has(key)) return false;
-            seen.add(key);
-            return true;
-        }).slice(0, 32);
-    }
-
-    function collectPowHeaderFields(headers) {
-        const fields = [];
-        try {
-            new Headers(headers || {}).forEach((value, key) => {
-                if (!POW_HEADER_RE.test(key)) return;
-                const text = String(value || '');
-                fields.push({ key, type: 'header', present: Boolean(text), empty: !text, length: text.length });
-            });
-        } catch {}
-        return fields.slice(0, 16);
-    }
-
-    function buildPowChannelSummary(bodyFields, headerFields) {
-        const fields = [...bodyFields, ...headerFields];
+    function extractPowRequirement(payload) {
+        if (!payload || typeof payload !== 'object') return null;
+        const requirement = payload.proofofwork || payload.proof_of_work || payload.proofOfWork;
+        if (!requirement || typeof requirement !== 'object' || Array.isArray(requirement)) return null;
+        const difficulty = typeof requirement.difficulty === 'string' ? requirement.difficulty.trim().slice(0, 80) : '';
         return {
-            present: fields.some(field => field.present),
-            fieldCount: fields.length,
-            fields
+            required: typeof requirement.required === 'boolean' ? requirement.required : null,
+            difficulty,
+            difficultyDecimal: difficulty ? parsePowDifficultyDecimal(difficulty) : null
         };
     }
 
-    async function captureSentinelFinalize(input, init, url, response) {
-        if (!isSentinelRequirementsUrl(url)) return;
-        const bodyText = await getRequestBodyText(input, init);
-        const payload = parseJsonMaybe(bodyText);
-        const requestBodyFields = collectPowFields(payload);
-        const requestHeaders = mergeHeaders(input instanceof Request ? input.headers : null, init?.headers);
-        const requestHeaderFields = collectPowHeaderFields(requestHeaders);
-        let responseSample = '';
-        try {
-            responseSample = await readResponseSample(response, 8000);
-        } catch (error) {
-            log('Failed to read Sentinel response sample', error);
-        }
-        const responseBodyFields = collectPowFieldsFromSample(responseSample);
-        const responseHeaderFields = collectPowHeaderFields(response?.headers);
-        const request = buildPowChannelSummary(requestBodyFields, requestHeaderFields);
-        const responseSummary = buildPowChannelSummary(responseBodyFields, responseHeaderFields);
+    async function captureSentinelRequirements(input, init, url, response) {
+        const phase = getSentinelRequirementsPhase(url);
+        if (!phase) return;
         const parsedUrl = getSameOriginUrl(url);
         const endpoint = parsedUrl?.pathname || '';
-        const record = {
+        if (phase === 'prepare') {
+            let payload = null;
+            try {
+                payload = await response.clone().json();
+            } catch (error) {
+                log('Failed to parse Sentinel requirements response', error);
+            }
+            const requirement = extractPowRequirement(payload);
+            const record = {
+                endpoint,
+                status: response?.status || 0,
+                ok: Boolean(response?.ok),
+                required: requirement?.required ?? null,
+                difficulty: requirement?.difficulty || '',
+                difficultyDecimal: requirement?.difficultyDecimal ?? null,
+                at: Date.now()
+            };
+            lastPowDetection = record;
+            injectionDiagnostic = { ...injectionDiagnostic, pow: record };
+            appendPacketLog('sentinel-pow-difficulty', null, record);
+            updateDiagnostics();
+            log('Sentinel PoW difficulty captured', record);
+            return;
+        }
+
+        const bodyText = await getRequestBodyText(input, init);
+        const payload = parseJsonMaybe(bodyText);
+        const headerValue = response?.headers?.get?.('x-oai-is-update') || '';
+        lastSentinelFinalize = {
             endpoint,
             status: response?.status || 0,
             ok: Boolean(response?.ok),
-            contentType: response?.headers?.get?.('content-type') || '',
-            present: Boolean(request.present || responseSummary.present),
-            request,
-            response: responseSummary,
+            hasOaiIsUpdate: Boolean(headerValue),
+            oaiIsUpdateLength: headerValue.length || 0,
+            requestKeys: payload && typeof payload === 'object' ? Object.keys(payload).slice(0, 40) : [],
+            powRequired: lastPowDetection?.required === true,
+            powDifficulty: lastPowDetection?.difficulty || '',
             at: Date.now()
         };
-        lastPowDetection = record;
-        injectionDiagnostic = { ...injectionDiagnostic, pow: record };
-        if (isExactEndpointUrl(url, SENTINEL_FINALIZE_ENDPOINT)) {
-            const headerValue = response?.headers?.get?.('x-oai-is-update') || '';
-            lastSentinelFinalize = {
-                endpoint: SENTINEL_FINALIZE_ENDPOINT,
-                status: response?.status || 0,
-                ok: Boolean(response?.ok),
-                hasOaiIsUpdate: Boolean(headerValue),
-                oaiIsUpdateLength: headerValue.length || 0,
-                requestKeys: payload && typeof payload === 'object' ? Object.keys(payload).slice(0, 40) : [],
-                powPresent: record.present,
-                at: record.at
-            };
-        }
-        appendPacketLog('sentinel-requirements', null, record);
+        appendPacketLog('sentinel-finalize', null, lastSentinelFinalize);
         updateDiagnostics();
-        log('Sentinel PoW presence captured', {
-            endpoint,
-            request: { present: request.present, fieldCount: request.fieldCount },
-            response: { present: responseSummary.present, fieldCount: responseSummary.fieldCount }
-        });
     }
-
     function getSentinelFinalizeSummary() {
         if (!lastSentinelFinalize?.at) return null;
         return {
             status: lastSentinelFinalize.status || 0,
             ok: Boolean(lastSentinelFinalize.ok),
             hasOaiIsUpdate: Boolean(lastSentinelFinalize.hasOaiIsUpdate),
-            powPresent: Boolean(lastSentinelFinalize.powPresent),
+            powRequired: Boolean(lastSentinelFinalize.powRequired),
+            powDifficulty: lastSentinelFinalize.powDifficulty || '',
             ageMs: Math.max(0, Date.now() - lastSentinelFinalize.at)
         };
     }
@@ -4297,7 +4241,7 @@
                 captureConversationRequestPacket(input, init, url, 'before-rewrite').catch(error => log('Conversation request capture failed', error));
 
                 isModelsRequest = isExactEndpointUrl(url, MODELS_ENDPOINT);
-                isSentinelRequest = isSentinelRequirementsUrl(url);
+                isSentinelRequest = Boolean(getSentinelRequirementsPhase(url));
                 if (isModelsRequest) {
                     captureModelsRequest(input, init, url);
                 } else if (!isSentinelRequest) {
@@ -4331,7 +4275,7 @@
                     response.clone().json().then(data => ingestApiModels(data, { fromHook: true })).catch(() => {});
                 }
                 if (isSentinelRequest) {
-                    captureSentinelFinalize(input, init, url, response).catch(error => log('Sentinel requirements capture failed', error));
+                    captureSentinelRequirements(input, init, url, response).catch(error => log('Sentinel requirements capture failed', error));
                 }
                 observeWorkspaceAgentResponse(url, response);
                 if (rewritten && !rewritten.blocked) {
@@ -4367,12 +4311,12 @@
             wrappedXHRSend = function (body) {
                 let sendBody = body;
                 let rewritten = null;
-                const isSentinelRequest = isSentinelRequirementsUrl(this.__miRequestUrl);
+                const isSentinelRequest = Boolean(getSentinelRequirementsPhase(this.__miRequestUrl));
                 if (isSentinelRequest) {
                     this.addEventListener('loadend', () => {
                         try {
                             const status = Number(this.status || 0);
-                            const responseText = typeof this.responseText === 'string' ? this.responseText.slice(0, 8000) : '';
+                            const responseText = typeof this.responseText === 'string' ? this.responseText : '';
                             const responseHeaders = new Headers();
                             const contentType = this.getResponseHeader?.('content-type');
                             if (contentType) responseHeaders.set('content-type', contentType);
@@ -4381,7 +4325,7 @@
                                 status: responseStatus,
                                 headers: responseHeaders
                             });
-                            captureSentinelFinalize(null, { body: sendBody }, this.__miRequestUrl, syntheticResponse).catch(error => log('Sentinel XHR capture failed', error));
+                            captureSentinelRequirements(null, { body: sendBody }, this.__miRequestUrl, syntheticResponse).catch(error => log('Sentinel XHR capture failed', error));
                         } catch (error) {
                             log('Sentinel XHR response observer failed', error);
                         }
@@ -5978,10 +5922,10 @@
     function getDiagnosticPowText() {
         const record = lastPowDetection;
         if (!record) return t('pow_not_seen');
-        const requestCount = Number(record.request?.fieldCount || 0);
-        const responseCount = Number(record.response?.fieldCount || 0);
-        const status = record.present ? t('pow_present') : t('pow_absent');
-        return `${status} / req=${requestCount} / res=${responseCount}`;
+        if (record.required === false && !record.difficulty) return t('pow_not_required');
+        if (!record.difficulty) return t('pow_absent');
+        const decimal = Number.isSafeInteger(record.difficultyDecimal) ? ` (${record.difficultyDecimal})` : '';
+        return `${record.difficulty}${decimal}`;
     }
 
     function summarizePacketRequest() {
@@ -6185,7 +6129,7 @@
             pow.textContent = getDiagnosticPowText();
             pow.title = lastPowDetection ? JSON.stringify(lastPowDetection, null, 2) : '';
             pow.classList.toggle('is-muted', !lastPowDetection);
-            pow.classList.toggle('has-error', Boolean(lastPowDetection?.present));
+            pow.classList.toggle('has-error', false);
         }
         error.textContent = injectionDiagnostic.error || t('diagnostic_none');
         error.title = injectionDiagnostic.error || '';

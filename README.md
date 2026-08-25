@@ -38,7 +38,7 @@ Model Injector Pro is an independent, open-source Manifest V3 extension that bri
 - 检查 fetch、XHR、SSE、NDJSON 和 JSON 路径中的请求改写与响应模型信息。
 - 区分“已请求的模型”和“响应暴露的模型”；两者不一致时，以红色悬浮状态提醒。
 - 显示 Workspace Agent、system hint、改写状态和失败原因等本地诊断信息。
-- PoW 仅做字段存在性检测，不保存、打印、哈希、导出或展示 proof 内容。
+- PoW 诊断读取 `chat-requirements` 准备响应中的 difficulty，并同时显示十六进制原值和十进制换算；不读取模型回复，也不保存或展示 seed、proof 与相关令牌。
 - 调试模式默认关闭；诊断记录仅保存在当前页面内存中，关闭调试后清除。
 
 ### 上下文估算与本地偏好
