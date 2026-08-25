@@ -6187,6 +6187,7 @@
     }
 
     function applyUiText() {
+        if (!host) return;
         if (q('mi-b')) {
             q('mi-b').setAttribute('title', 'Open Model Injector · Drag to move · Right click to pause');
             q('mi-b').setAttribute('aria-label', 'Open Model Injector');
@@ -6208,7 +6209,7 @@
         if (q('mi-effort-title')) q('mi-effort-title').textContent = t('title_effort');
         if (q('mi-effort-subtitle')) q('mi-effort-subtitle').textContent = t('subtitle_effort');
 
-        const boxTitle = host.querySelector('.mi-box-head h4');
+        const boxTitle = host?.querySelector('.mi-box-head h4');
         if (boxTitle) boxTitle.innerHTML = `${t('title_context')} <span class="mi-badge">${t('auto_label')}</span>`;
         if (q('mi-calc')) {
             q('mi-calc').setAttribute('title', t('refresh_context'));
@@ -6220,12 +6221,12 @@
         if (q('val-lim')?.nextElementSibling) q('val-lim').nextElementSibling.textContent = t('limit');
 
         if (q('mi-btn-set')) q('mi-btn-set').textContent = t('settings');
-        const setHead = host.querySelector('#mi-set .mi-set-head h4');
+        const setHead = host?.querySelector('#mi-set .mi-set-head h4');
         if (setHead) setHead.textContent = t('settings');
         if (q('mi-set-close')) q('mi-set-close').textContent = '\u2190';
         if (q('mi-theme-label')) q('mi-theme-label').textContent = t('theme_color');
         renderColors();
-        const colorLabel = host.querySelector('#mi-set .mi-color-row label');
+        const colorLabel = host?.querySelector('#mi-set .mi-color-row label');
         if (colorLabel) colorLabel.textContent = t('custom_color');
         if (q('mi-lang-label')) q('mi-lang-label').textContent = t('language');
         const debugLabel = q('mi-debug-label');
@@ -10138,6 +10139,46 @@
 }
 .mi-diag-grid strong.has-error {
     color: #fca5a5;
+}
+.mi-diag-grid strong#mi-diag-pow {
+    justify-self: end;
+    max-width: none;
+    padding: 4px 9px;
+    border: 1px solid rgba(134, 239, 172, 0.26);
+    border-radius: 8px;
+    background: linear-gradient(135deg, rgba(134, 239, 172, 0.13), rgba(255, 255, 255, 0.055));
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.07), 0 3px 12px rgba(0,0,0,0.12);
+    color: #d9ffe5;
+    font-size: 12.5px;
+    font-weight: 780;
+    letter-spacing: 0.015em;
+    text-shadow: 0 0 12px rgba(134, 239, 172, 0.24);
+    overflow: visible;
+    text-overflow: clip;
+}
+.mi-diag-grid strong#mi-diag-pow.is-muted {
+    border-color: rgba(235,235,245,0.11);
+    background: rgba(255,255,255,0.035);
+    color: rgba(235,235,245,0.58);
+    text-shadow: none;
+}
+.mi-diag-grid strong#mi-diag-pow.is-normal {
+    border-color: rgba(190, 242, 100, 0.34);
+    background: linear-gradient(135deg, rgba(190, 242, 100, 0.14), rgba(255, 255, 255, 0.055));
+    color: #ecfccb;
+    text-shadow: 0 0 12px rgba(190, 242, 100, 0.22);
+}
+.mi-diag-grid strong#mi-diag-pow.is-warning {
+    border-color: rgba(253, 230, 138, 0.38);
+    background: linear-gradient(135deg, rgba(253, 230, 138, 0.14), rgba(255, 255, 255, 0.055));
+    color: #fef3c7;
+    text-shadow: 0 0 12px rgba(253, 230, 138, 0.22);
+}
+.mi-diag-grid strong#mi-diag-pow.has-error {
+    border-color: rgba(252, 165, 165, 0.42);
+    background: linear-gradient(135deg, rgba(248, 113, 113, 0.16), rgba(255, 255, 255, 0.055));
+    color: #fee2e2;
+    text-shadow: 0 0 12px rgba(248, 113, 113, 0.24);
 }
 .mi-diag-actions {
     display: flex;
